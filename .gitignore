@@ -1,5 +1,4 @@
 /target/
-Cargo.lock
 .DS_Store
 
 # Generated datasets and local build outputs.

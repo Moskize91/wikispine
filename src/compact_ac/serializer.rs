@@ -1,0 +1,198 @@
+//! Utilities for serializing/deserializing data.
+
+use core::num::NonZeroU32;
+
+use alloc::vec::Vec;
+
+use crate::compact_ac::errors::{DaachorseError, Result};
+use crate::compact_ac::utils::FromU32;
+use crate::compact_ac::Empty;
+
+/// Trait indicating serializability.
+///
+/// If the type of output value of the automaton implements this trait, the automaton can be
+/// serialized.
+pub trait Serializable: Sized {
+    /// Serializes this value into the destination buffer.
+    ///
+    /// This function is called during serialization.
+    ///
+    /// # Arguments
+    ///
+    /// * `dst` - The destination to which the serialized data is written.
+    fn serialize_to_vec(&self, dst: &mut Vec<u8>);
+
+    /// Deserializes a value from the given slice, returning the value and remaining bytes.
+    ///
+    /// This function is called during deserialization.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - The source slice containing the serialized data.
+    fn deserialize_from_slice(src: &[u8]) -> Result<(Self, &[u8])>;
+
+    /// Returns the size of serialized data.
+    fn serialized_bytes() -> usize;
+}
+
+macro_rules! define_serializable_primitive {
+    ($type:ty) => {
+        impl Serializable for $type {
+            #[inline(always)]
+            fn serialize_to_vec(&self, dst: &mut Vec<u8>) {
+                dst.extend_from_slice(&self.to_le_bytes());
+            }
+
+            #[inline(always)]
+            fn deserialize_from_slice(src: &[u8]) -> Result<(Self, &[u8])> {
+                let (&x, rest) = src
+                    .split_first_chunk()
+                    .ok_or(DaachorseError::invalid_automaton())?;
+                let x = Self::from_le_bytes(x);
+                Ok((x, rest))
+            }
+
+            #[inline(always)]
+            fn serialized_bytes() -> usize {
+                core::mem::size_of::<Self>()
+            }
+        }
+    };
+}
+
+define_serializable_primitive!(u8);
+define_serializable_primitive!(u16);
+define_serializable_primitive!(u32);
+define_serializable_primitive!(u64);
+define_serializable_primitive!(u128);
+
+define_serializable_primitive!(i8);
+define_serializable_primitive!(i16);
+define_serializable_primitive!(i32);
+define_serializable_primitive!(i64);
+define_serializable_primitive!(i128);
+
+impl Serializable for Option<NonZeroU32> {
+    #[inline(always)]
+    fn serialize_to_vec(&self, dst: &mut Vec<u8>) {
+        self.map_or(0, NonZeroU32::get).serialize_to_vec(dst);
+    }
+
+    #[inline(always)]
+    fn deserialize_from_slice(src: &[u8]) -> Result<(Self, &[u8])> {
+        let (x, src) = u32::deserialize_from_slice(src)?;
+        Ok((NonZeroU32::new(x), src))
+    }
+
+    #[inline(always)]
+    fn serialized_bytes() -> usize {
+        u32::serialized_bytes()
+    }
+}
+
+pub trait SerializableVec: Sized {
+    fn serialize_to_vec(&self, dst: &mut Vec<u8>);
+
+    fn deserialize_from_slice(src: &[u8]) -> Result<(Self, &[u8])>;
+
+    fn serialized_bytes(&self) -> usize;
+}
+
+impl<S> SerializableVec for Vec<S>
+where
+    S: Serializable,
+{
+    #[inline(always)]
+    fn serialize_to_vec(&self, dst: &mut Vec<u8>) {
+        u32::try_from(self.len()).unwrap().serialize_to_vec(dst);
+        self.iter().for_each(|x| x.serialize_to_vec(dst));
+    }
+
+    #[inline(always)]
+    fn deserialize_from_slice(src: &[u8]) -> Result<(Self, &[u8])> {
+        let (len, mut src) = u32::deserialize_from_slice(src)?;
+        // To mitigate out-of-memory crashes when parsing a maliciously crafted automaton, restrict
+        // the memory allocation to not exceed the byte limit provided as an argument.
+        if usize::from_u32(len) * core::mem::size_of::<S>() > src.len() {
+            return Err(DaachorseError::invalid_automaton());
+        }
+        let mut dst = Self::with_capacity(usize::from_u32(len));
+        for _ in 0..len {
+            let (x, rest) = S::deserialize_from_slice(src)?;
+            dst.push(x);
+            src = rest;
+        }
+        Ok((dst, src))
+    }
+
+    fn serialized_bytes(&self) -> usize {
+        u32::serialized_bytes() + S::serialized_bytes() * self.len()
+    }
+}
+
+impl Serializable for Empty {
+    #[inline(always)]
+    fn serialize_to_vec(&self, _dst: &mut Vec<u8>) {}
+
+    #[inline(always)]
+    fn deserialize_from_slice(src: &[u8]) -> Result<(Self, &[u8])> {
+        Ok((Self, src))
+    }
+
+    #[inline(always)]
+    fn serialized_bytes() -> usize {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_u32() {
+        let x = 0x01234567u32;
+        let mut data = vec![];
+        x.serialize_to_vec(&mut data);
+        assert_eq!(vec![0x67, 0x45, 0x23, 0x01], data);
+        assert_eq!(4, u32::serialized_bytes());
+        data.push(42);
+        let (y, rest) = u32::deserialize_from_slice(&data).unwrap();
+        assert_eq!(&[42], rest);
+        assert_eq!(x, y);
+    }
+
+    #[test]
+    fn test_nzu32() {
+        let x = NonZeroU32::new(0x01234567u32);
+        let mut data = vec![];
+        x.serialize_to_vec(&mut data);
+        assert_eq!(vec![0x67, 0x45, 0x23, 0x01], data);
+        assert_eq!(4, Option::<NonZeroU32>::serialized_bytes());
+        data.push(42);
+        let (y, rest) = Option::<NonZeroU32>::deserialize_from_slice(&data).unwrap();
+        assert_eq!(&[42], rest);
+        assert_eq!(x, y);
+    }
+
+    #[test]
+    fn test_vec_u32() {
+        let x = vec![0x01234567u32, 0x89abcdefu32, 0x02468aceu32];
+        let mut data = vec![];
+        x.serialize_to_vec(&mut data);
+        assert_eq!(
+            vec![
+                0x03, 0x00, 0x00, 0x00, // len
+                0x67, 0x45, 0x23, 0x01, // item 1
+                0xef, 0xcd, 0xab, 0x89, // item 2
+                0xce, 0x8a, 0x46, 0x02, // item 3
+            ],
+            data
+        );
+        assert_eq!(16, x.serialized_bytes());
+        data.push(42);
+        let (y, rest) = Vec::<u32>::deserialize_from_slice(&data).unwrap();
+        assert_eq!(&[42], rest);
+        assert_eq!(x, y);
+    }
+}
