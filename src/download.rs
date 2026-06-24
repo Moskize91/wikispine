@@ -5,8 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const DEFAULT_USER_AGENT: &str =
-    "wikispine/0.1 (+https://github.com/Moskize91/wikispine)";
+const DEFAULT_USER_AGENT: &str = "wikispine/0.1 (+https://github.com/Moskize91/wikispine)";
 const WIKIMEDIA_DUMPS_BASE: &str = "https://dumps.wikimedia.org";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,7 +148,9 @@ fn wikidata_entities_target(out: &Path, date: &str) -> Target {
         )
     } else {
         (
-            format!("{WIKIMEDIA_DUMPS_BASE}/wikidatawiki/entities/{date}/wikidata-{date}-all.json.bz2"),
+            format!(
+                "{WIKIMEDIA_DUMPS_BASE}/wikidatawiki/entities/{date}/wikidata-{date}-all.json.bz2"
+            ),
             format!("wikidata-{date}-all.json.bz2"),
         )
     };
@@ -210,13 +211,21 @@ fn write_manifest(path: &Path, date: &str, targets: &[Target]) -> Result<()> {
         let comma = if index + 1 == targets.len() { "" } else { "," };
         let bytes = target.path.metadata().map(|metadata| metadata.len()).ok();
         writeln!(file, "    {{")?;
-        writeln!(file, "      \"component\": \"{}\",", target.component.as_str())?;
+        writeln!(
+            file,
+            "      \"component\": \"{}\",",
+            target.component.as_str()
+        )?;
         match &target.wiki {
             Some(wiki) => writeln!(file, "      \"wiki\": \"{}\",", escape_json(wiki))?,
             None => writeln!(file, "      \"wiki\": null,")?,
         }
         writeln!(file, "      \"url\": \"{}\",", escape_json(&target.url))?;
-        writeln!(file, "      \"path\": \"{}\",", escape_json(&path_for_manifest(&target.path)))?;
+        writeln!(
+            file,
+            "      \"path\": \"{}\",",
+            escape_json(&path_for_manifest(&target.path))
+        )?;
         match bytes {
             Some(bytes) => writeln!(file, "      \"bytes\": {bytes}")?,
             None => writeln!(file, "      \"bytes\": null")?,
@@ -242,6 +251,9 @@ fn require_curl() -> Result<()> {
 }
 
 fn partial_path(path: &Path) -> PathBuf {
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("download");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
     path.with_file_name(format!("{file_name}.part"))
 }

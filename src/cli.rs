@@ -87,12 +87,17 @@ fn parse_preprocess_args(raw_args: Vec<String>) -> Result<preprocess::Args> {
             }
             "--limit" => {
                 index += 1;
-                args.limit = Some(parse_usize(require_value(&raw_args, index, "--limit")?, "--limit")?);
+                args.limit = Some(parse_usize(
+                    require_value(&raw_args, index, "--limit")?,
+                    "--limit",
+                )?);
             }
             "--progress-every" => {
                 index += 1;
-                args.progress_every =
-                    parse_usize(require_value(&raw_args, index, "--progress-every")?, "--progress-every")?;
+                args.progress_every = parse_usize(
+                    require_value(&raw_args, index, "--progress-every")?,
+                    "--progress-every",
+                )?;
             }
             "-h" | "--help" => {
                 print_preprocess_help();
@@ -120,12 +125,24 @@ fn parse_compile_args(raw_args: Vec<String>) -> Result<ac_compile::Args> {
             }
             "--limit" => {
                 index += 1;
-                args.limit = Some(parse_usize(require_value(&raw_args, index, "--limit")?, "--limit")?);
+                args.limit = Some(parse_usize(
+                    require_value(&raw_args, index, "--limit")?,
+                    "--limit",
+                )?);
+            }
+            "--shard-size" => {
+                index += 1;
+                args.shard_size = parse_usize(
+                    require_value(&raw_args, index, "--shard-size")?,
+                    "--shard-size",
+                )?;
             }
             "--progress-every" => {
                 index += 1;
-                args.progress_every =
-                    parse_usize(require_value(&raw_args, index, "--progress-every")?, "--progress-every")?;
+                args.progress_every = parse_usize(
+                    require_value(&raw_args, index, "--progress-every")?,
+                    "--progress-every",
+                )?;
             }
             "-h" | "--help" => {
                 print_compile_help();
@@ -224,6 +241,7 @@ fn print_compile_help() {
     println!("  --preprocess <dir>           Preprocess directory (default: data/preprocess)");
     println!("  --out <dir>                  Output directory (default: data/compile)");
     println!("  --limit <n>                  Debug limit for surface rows");
+    println!("  --shard-size <n>             Surface rows per automaton shard (default: 250000)");
     println!("  --progress-every <n>         Progress interval (default: 100000)");
 }
 

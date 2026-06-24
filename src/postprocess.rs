@@ -104,10 +104,17 @@ fn write_surface_tables(
     let mut qid_set = BTreeMap::<u32, u32>::new();
     let mut surface_qid_value_count = 0usize;
 
-    let mut index = BufWriter::new(File::create(surfaces_out_dir.join("surface_qid_index.bin"))?);
-    let mut values = BufWriter::new(File::create(surfaces_out_dir.join("surface_qid_values.bin"))?);
+    let mut index = BufWriter::new(File::create(
+        surfaces_out_dir.join("surface_qid_index.bin"),
+    )?);
+    let mut values = BufWriter::new(File::create(
+        surfaces_out_dir.join("surface_qid_values.bin"),
+    )?);
 
-    for (line_number, line) in BufReader::new(File::open(surface_qids_path)?).lines().enumerate() {
+    for (line_number, line) in BufReader::new(File::open(surface_qids_path)?)
+        .lines()
+        .enumerate()
+    {
         let line = line?;
         if line_number == 0 {
             validate_surface_qids_header(&line)?;
@@ -130,10 +137,15 @@ fn write_surface_tables(
         })?;
         surface_utf16_lengths.push(utf16_len);
 
-        write_u32(&mut index, checked_u32(surface_qid_value_count, "surface QID offset"))?;
+        write_u32(
+            &mut index,
+            checked_u32(surface_qid_value_count, "surface QID offset"),
+        )?;
         write_u32(&mut index, checked_u32(qids.len(), "surface QID length"))?;
         for qid in qids {
-            qid_set.entry(qid).or_insert_with(|| *qid_flags.get(&qid).unwrap_or(&0));
+            qid_set
+                .entry(qid)
+                .or_insert_with(|| *qid_flags.get(&qid).unwrap_or(&0));
             write_u32(&mut values, qid)?;
             surface_qid_value_count += 1;
         }
@@ -184,9 +196,12 @@ fn read_qid_flags(path: &Path) -> Result<BTreeMap<u32, u32>> {
             .next()
             .ok_or_else(|| err(format!("missing flags at line {}", line_number + 1)))?;
         let qid = parse_qid(qid, line_number + 1)?;
-        let flag = flag
-            .parse::<u32>()
-            .map_err(|source| err(format!("invalid flags at line {}: {source}", line_number + 1)))?;
+        let flag = flag.parse::<u32>().map_err(|source| {
+            err(format!(
+                "invalid flags at line {}: {source}",
+                line_number + 1
+            ))
+        })?;
         flags.insert(qid, flag);
     }
     Ok(flags)
@@ -225,7 +240,12 @@ fn write_automaton_tables(
 
     let states_len = read_u32(&mut reader)?;
     let mut states_out = BufWriter::new(File::create(automaton_out_dir.join("states.bin"))?);
-    copy_exact_bytes(&mut reader, &mut states_out, u64::from(states_len) * 16, "states")?;
+    copy_exact_bytes(
+        &mut reader,
+        &mut states_out,
+        u64::from(states_len) * 16,
+        "states",
+    )?;
     states_out.flush()?;
 
     let mapper_table_len = read_u32(&mut reader)?;
@@ -249,7 +269,11 @@ fn write_automaton_tables(
         let utf16_len = surface_utf16_lengths
             .get(surface_id as usize)
             .copied()
-            .ok_or_else(|| err(format!("automaton output references unknown surface_id {surface_id}")))?;
+            .ok_or_else(|| {
+                err(format!(
+                    "automaton output references unknown surface_id {surface_id}"
+                ))
+            })?;
         write_u32(&mut outputs_out, surface_id)?;
         write_u32(&mut outputs_out, utf16_len)?;
         write_u32(&mut outputs_out, parent_output_pos)?;
@@ -284,31 +308,83 @@ fn write_manifest(
     writeln!(file, "{{")?;
     writeln!(file, "  \"format\": \"wikispine-runtime-v1\",")?;
     writeln!(file, "  \"generated_at_unix\": {},", generated_at_unix())?;
-    writeln!(file, "  \"preprocess\": \"{}\",", escape_json(&path_for_manifest(&args.preprocess)))?;
-    writeln!(file, "  \"compile\": \"{}\",", escape_json(&path_for_manifest(&args.compile)))?;
-    writeln!(file, "  \"out\": \"{}\",", escape_json(&path_for_manifest(&args.out)))?;
+    writeln!(
+        file,
+        "  \"preprocess\": \"{}\",",
+        escape_json(&path_for_manifest(&args.preprocess))
+    )?;
+    writeln!(
+        file,
+        "  \"compile\": \"{}\",",
+        escape_json(&path_for_manifest(&args.compile))
+    )?;
+    writeln!(
+        file,
+        "  \"out\": \"{}\",",
+        escape_json(&path_for_manifest(&args.out))
+    )?;
     writeln!(file, "  \"endian\": \"little\",")?;
     writeln!(file, "  \"mode\": \"charwise\",")?;
     writeln!(file, "  \"match_kind\": {},", automaton_stats.match_kind)?;
     writeln!(file, "  \"state_record_bytes\": 16,")?;
     writeln!(file, "  \"state_output_record_bytes\": 12,")?;
     writeln!(file, "  \"surface_qid_index_record_bytes\": 8,")?;
-    writeln!(file, "  \"surface_count\": {},", surface_stats.surface_count)?;
-    writeln!(file, "  \"surface_qid_value_count\": {},", surface_stats.surface_qid_value_count)?;
+    writeln!(
+        file,
+        "  \"surface_count\": {},",
+        surface_stats.surface_count
+    )?;
+    writeln!(
+        file,
+        "  \"surface_qid_value_count\": {},",
+        surface_stats.surface_qid_value_count
+    )?;
     writeln!(file, "  \"qid_count\": {},", surface_stats.qid_count)?;
-    writeln!(file, "  \"flagged_qid_count\": {},", surface_stats.flagged_qid_count)?;
+    writeln!(
+        file,
+        "  \"flagged_qid_count\": {},",
+        surface_stats.flagged_qid_count
+    )?;
     writeln!(file, "  \"states_len\": {},", automaton_stats.states_len)?;
     writeln!(file, "  \"num_states\": {},", automaton_stats.num_states)?;
-    writeln!(file, "  \"mapper_table_len\": {},", automaton_stats.mapper_table_len)?;
-    writeln!(file, "  \"alphabet_size\": {},", automaton_stats.alphabet_size)?;
-    writeln!(file, "  \"state_output_count\": {},", automaton_stats.output_count)?;
-    writeln!(file, "  \"source_automaton_bytes\": {},", automaton_stats.automaton_bytes)?;
+    writeln!(
+        file,
+        "  \"mapper_table_len\": {},",
+        automaton_stats.mapper_table_len
+    )?;
+    writeln!(
+        file,
+        "  \"alphabet_size\": {},",
+        automaton_stats.alphabet_size
+    )?;
+    writeln!(
+        file,
+        "  \"state_output_count\": {},",
+        automaton_stats.output_count
+    )?;
+    writeln!(
+        file,
+        "  \"source_automaton_bytes\": {},",
+        automaton_stats.automaton_bytes
+    )?;
     writeln!(file, "  \"files\": {{")?;
-    writeln!(file, "    \"char_code_map\": \"automaton/char_code_map.bin\",")?;
+    writeln!(
+        file,
+        "    \"char_code_map\": \"automaton/char_code_map.bin\","
+    )?;
     writeln!(file, "    \"states\": \"automaton/states.bin\",")?;
-    writeln!(file, "    \"state_outputs\": \"automaton/state_outputs.bin\",")?;
-    writeln!(file, "    \"surface_qid_index\": \"surfaces/surface_qid_index.bin\",")?;
-    writeln!(file, "    \"surface_qid_values\": \"surfaces/surface_qid_values.bin\",")?;
+    writeln!(
+        file,
+        "    \"state_outputs\": \"automaton/state_outputs.bin\","
+    )?;
+    writeln!(
+        file,
+        "    \"surface_qid_index\": \"surfaces/surface_qid_index.bin\","
+    )?;
+    writeln!(
+        file,
+        "    \"surface_qid_values\": \"surfaces/surface_qid_values.bin\","
+    )?;
     writeln!(file, "    \"qid_numbers\": \"qids/qid_numbers.bin\",")?;
     writeln!(file, "    \"qid_flags\": \"qids/qid_flags.bin\"")?;
     writeln!(file, "  }}")?;
@@ -361,7 +437,10 @@ fn checked_u32(value: usize, label: &str) -> u32 {
 }
 
 fn tmp_dir(out: &Path) -> PathBuf {
-    let file_name = out.file_name().and_then(|name| name.to_str()).unwrap_or("runtime");
+    let file_name = out
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("runtime");
     out.with_file_name(format!("{file_name}.tmp"))
 }
 
@@ -419,7 +498,10 @@ mod tests {
         assert_eq!(read_u32_at(&index, 20), 1);
 
         let values = fs::read(runtime_dir.join("surfaces/surface_qid_values.bin")).unwrap();
-        let values = values.chunks_exact(4).map(read_u32_chunk).collect::<Vec<_>>();
+        let values = values
+            .chunks_exact(4)
+            .map(read_u32_chunk)
+            .collect::<Vec<_>>();
         assert_eq!(values, vec![956, 13371, 3918, 3918]);
 
         let qid_numbers = fs::read(runtime_dir.join("qids/qid_numbers.bin")).unwrap();

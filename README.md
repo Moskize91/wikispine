@@ -38,6 +38,10 @@ The current surface sources are:
 The compiler only reads `surface_key` and builds an Aho-Corasick automaton whose output value is
 `surface_id`, defined as the row number in `surface_qids.tsv`.
 
+Compilation is sharded because the full surface table is too large for ordinary local memory. Each
+shard contains at most `--shard-size` surface rows and still emits global `surface_id` values.
+Runtime query code should run all shard automatons and merge their matches.
+
 The runtime package maps:
 
 ```text

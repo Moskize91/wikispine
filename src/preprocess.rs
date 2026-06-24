@@ -1,9 +1,7 @@
 use crate::error::{err, Result};
 use crate::qid::{qid_number_from_str, QID_FLAG_DISAMBIGUATION, WIKIDATA_DISAMBIGUATION_QID};
 use crate::tsv;
-use crate::wiki_sql::{
-    for_insert_values, open_bzip2_or_plain_reader, parse_i32, parse_u64,
-};
+use crate::wiki_sql::{for_insert_values, open_bzip2_or_plain_reader, parse_i32, parse_u64};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
@@ -389,7 +387,10 @@ pub fn normalize_surface_key(value: &str) -> Option<String> {
     }
 }
 
-fn write_surface_qids_tsv(path: &Path, surface_qids: &BTreeMap<String, BTreeSet<u32>>) -> Result<()> {
+fn write_surface_qids_tsv(
+    path: &Path,
+    surface_qids: &BTreeMap<String, BTreeSet<u32>>,
+) -> Result<()> {
     let mut file = BufWriter::new(File::create(path)?);
     writeln!(file, "surface_key\tqids\tqid_count")?;
     for (surface_key, qids) in surface_qids {
@@ -422,15 +423,27 @@ fn write_manifest(path: &Path, args: &Args, summaries: &[String]) -> Result<()> 
     writeln!(file, "  \"format\": \"wikispine-preprocess-v1\",")?;
     writeln!(file, "  \"generated_at_unix\": {},", generated_at_unix())?;
     writeln!(file, "  \"date\": \"{}\",", escape_json(&args.date))?;
-    writeln!(file, "  \"dumps\": \"{}\",", escape_json(&path_for_manifest(&args.dumps)))?;
-    writeln!(file, "  \"out\": \"{}\",", escape_json(&path_for_manifest(&args.out)))?;
+    writeln!(
+        file,
+        "  \"dumps\": \"{}\",",
+        escape_json(&path_for_manifest(&args.dumps))
+    )?;
+    writeln!(
+        file,
+        "  \"out\": \"{}\",",
+        escape_json(&path_for_manifest(&args.out))
+    )?;
     match args.limit {
         Some(limit) => writeln!(file, "  \"limit\": {limit},")?,
         None => writeln!(file, "  \"limit\": null,")?,
     }
     writeln!(file, "  \"wikis\": [")?;
     for (index, wiki) in args.wikis.iter().enumerate() {
-        let comma = if index + 1 == args.wikis.len() { "" } else { "," };
+        let comma = if index + 1 == args.wikis.len() {
+            ""
+        } else {
+            ","
+        };
         writeln!(file, "    \"{}\"{comma}", escape_json(wiki))?;
     }
     writeln!(file, "  ],")?;
@@ -441,7 +454,11 @@ fn write_manifest(path: &Path, args: &Args, summaries: &[String]) -> Result<()> 
     writeln!(file, "  ],")?;
     writeln!(file, "  \"summaries\": [")?;
     for (index, summary) in summaries.iter().enumerate() {
-        let comma = if index + 1 == summaries.len() { "" } else { "," };
+        let comma = if index + 1 == summaries.len() {
+            ""
+        } else {
+            ","
+        };
         writeln!(file, "    \"{}\"{comma}", escape_json(summary))?;
     }
     writeln!(file, "  ]")?;
