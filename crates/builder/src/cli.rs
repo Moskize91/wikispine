@@ -206,7 +206,7 @@ fn split_csv(value: &str) -> Vec<String> {
 }
 
 fn print_help() {
-    println!("wikispine");
+    println!("wikispine-builder");
     println!();
     println!("Commands:");
     println!("  download     Download upstream Wikimedia dump files");
@@ -216,7 +216,7 @@ fn print_help() {
 }
 
 fn print_download_help() {
-    println!("Usage: wikispine download [options]");
+    println!("Usage: wikispine-builder download [options]");
     println!("  --out <dir>                  Output directory (default: data/dumps)");
     println!("  --wikis <csv>                Wiki DB names (default: zhwiki,enwiki)");
     println!("  --components <csv>           page,redirect,page_props,wikidata_entities");
@@ -227,7 +227,7 @@ fn print_download_help() {
 }
 
 fn print_preprocess_help() {
-    println!("Usage: wikispine preprocess [options]");
+    println!("Usage: wikispine-builder preprocess [options]");
     println!("  --dumps <dir>                Downloaded dump directory (default: data/dumps)");
     println!("  --out <dir>                  Output directory (default: data/preprocess)");
     println!("  --wikis <csv>                Wiki DB names (default: zhwiki,enwiki)");
@@ -237,7 +237,7 @@ fn print_preprocess_help() {
 }
 
 fn print_compile_help() {
-    println!("Usage: wikispine compile [options]");
+    println!("Usage: wikispine-builder compile [options]");
     println!("  --preprocess <dir>           Preprocess directory (default: data/preprocess)");
     println!("  --out <dir>                  Output directory (default: data/compile)");
     println!("  --limit <n>                  Debug limit for surface rows");
@@ -246,7 +246,7 @@ fn print_compile_help() {
 }
 
 fn print_postprocess_help() {
-    println!("Usage: wikispine postprocess [options]");
+    println!("Usage: wikispine-builder postprocess [options]");
     println!("  --preprocess <dir>           Preprocess directory (default: data/preprocess)");
     println!("  --compile <dir>              Compile directory (default: data/compile)");
     println!("  --out <dir>                  Output directory (default: data/runtime)");
