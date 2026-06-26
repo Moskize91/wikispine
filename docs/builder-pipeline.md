@@ -8,7 +8,7 @@ Builder 的目标不是把 dump 一路“顺手处理”到服务可用，而是
 
 `download` 单独存在，是因为 raw dumps 很大、下载很慢，但内容不属于本项目 schema。只要上游文件没有变化，后续可以反复重建而不重新下载。`preprocess` 是语义中心，它把页面标题、重定向、Wikidata label/alias/sitelink 统一成唯一主表 `surface_key -> QID[]`，并确定全局 `surface_id`。这个阶段必须独立，因为它决定后续所有产物的身份空间。
 
-`compile` 只负责编译 surface key 到 Aho-Corasick 自动机，不读取 QID 候选。这样自动机可以按 surface 数量分片，避免一次性编译时内存爆掉；同时它的 output 只保留 `surface_id`，不会把 QID 表结构固化进自动机。`postprocess` 则把 preprocess 和 compile 的结果合并成 runtime 唯一需要的数据包。这样 runtime 的边界很窄：只读 `data/runtime/`，不关心 dumps、中间 TSV 或 builder 内部自动机格式。
+`compile` 只负责编译 surface key 到 Aho-Corasick 自动机，不读取 QID 候选。这样自动机可以按 surface 数量分片，避免一次性编译时内存爆掉；同时它的 output 只保留 `surface_id`，不会把 QID 表结构固化进自动机。这个阶段和内存规模强相关：内存越大，surface 分片可以越大，最终搜索器数量越少，下游每次查询需要跑的自动机也越少。`postprocess` 则把 preprocess 和 compile 的结果合并成 runtime 唯一需要的数据包。这样 runtime 的边界很窄：只读 `data/runtime/`，不关心 dumps、中间 TSV 或 builder 内部自动机格式。
 
 默认数据目录都位于仓库根目录的 `data/` 下，属于生成产物，不应签入 git。四个步骤是：
 
@@ -87,6 +87,8 @@ download -> preprocess -> compile -> postprocess
 - 自动机按 `--shard-size` 拆分；查询时需要运行所有 shard 并合并结果。
 - `data/compile/` 是 builder 内部中间产物，不是最终 runtime 数据包。
 - 全量编译非常吃内存和时间；大规模构造应优先在大内存机器上完成。
+- 当前全量数据是专门租用 512GB 内存服务器才完成的，compile 产物来之不易，应在清理本机或云主机前确认已经备份。
+- 在可承受失败的前提下，compile 的 `--shard-size` 可以偏激进设置。内存越大，拆出来的搜索器越少；搜索器越少，runtime 查询时的固定开销越低。
 
 ## 4. Postprocess
 
