@@ -2,6 +2,7 @@ use crate::error::{err, Result};
 use crate::preprocess::{escape_json, generated_at_unix, path_for_manifest};
 use crate::qid::{parse_qid, QID_FLAG_DISAMBIGUATION};
 use crate::tsv;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{copy, BufRead, BufReader, BufWriter, Read, Write};
@@ -43,11 +44,38 @@ struct AutomatonStats {
     num_states: u32,
 }
 
+#[derive(Debug)]
+struct CompileShard {
+    shard_id: usize,
+    path: PathBuf,
+    surface_start: u32,
+    surface_count: usize,
+    surface_end_exclusive: u32,
+    automaton_bytes: u64,
+}
+
+#[derive(Debug)]
+struct RuntimeShardStats {
+    shard_id: usize,
+    surface_start: u32,
+    surface_count: usize,
+    surface_end_exclusive: u32,
+    automaton: AutomatonStats,
+}
+
+#[derive(Debug)]
+struct RuntimeAutomataStats {
+    shard_count: usize,
+    source_automaton_bytes: u64,
+    state_output_count: usize,
+    shards: Vec<RuntimeShardStats>,
+}
+
 pub fn run(args: Args) -> Result<()> {
     let surface_qids_path = args.preprocess.join("surface_qids.tsv");
     let qid_flags_path = args.preprocess.join("qid_flags.tsv");
-    let automaton_path = args.compile.join("automaton.bin");
-    for path in [&surface_qids_path, &qid_flags_path, &automaton_path] {
+    let compile_manifest_path = args.compile.join("manifest.json");
+    for path in [&surface_qids_path, &qid_flags_path, &compile_manifest_path] {
         if !path.exists() {
             return Err(err(format!("missing input file: {}", path.display())));
         }
@@ -70,15 +98,16 @@ pub fn run(args: Args) -> Result<()> {
         &tmp_dir.join("surfaces"),
         &tmp_dir.join("qids"),
     )?;
-    let automaton_stats = write_automaton_tables(
-        &automaton_path,
-        &tmp_dir.join("automaton"),
+    let compile_shards = read_compile_shards(&compile_manifest_path, &args.compile)?;
+    let automata_stats = write_sharded_automaton_tables(
+        &compile_shards,
+        &tmp_dir.join("automaton").join("shards"),
         &surface_utf16_lengths,
     )?;
-    if automaton_stats.output_count as usize != surface_stats.surface_count {
+    if automata_stats.state_output_count != surface_stats.surface_count {
         return Err(err(format!(
             "automaton output count {} does not match surface count {}",
-            automaton_stats.output_count, surface_stats.surface_count
+            automata_stats.state_output_count, surface_stats.surface_count
         )));
     }
 
@@ -86,7 +115,7 @@ pub fn run(args: Args) -> Result<()> {
         &tmp_dir.join("manifest.json"),
         &args,
         &surface_stats,
-        &automaton_stats,
+        &automata_stats,
     )?;
     fs::rename(&tmp_dir, &args.out)?;
     eprintln!("wrote {}", args.out.display());
@@ -230,10 +259,128 @@ fn parse_surface_qids_row(line: &str, line_number: usize) -> Result<(String, Vec
     Ok((surface_key, qids, qid_count))
 }
 
+fn read_compile_shards(manifest_path: &Path, compile_dir: &Path) -> Result<Vec<CompileShard>> {
+    let manifest = serde_json::from_reader::<_, Value>(File::open(manifest_path)?)?;
+    let shards = manifest
+        .get("shards")
+        .and_then(Value::as_array)
+        .ok_or_else(|| err("compile manifest missing shards[]"))?;
+    if shards.is_empty() {
+        return Err(err("compile manifest has no shards"));
+    }
+
+    let mut result = Vec::with_capacity(shards.len());
+    for (index, shard) in shards.iter().enumerate() {
+        let shard_id = json_usize(shard, "shard_id")?;
+        if shard_id != index {
+            return Err(err(format!(
+                "compile shard id {shard_id} is out of order at index {index}"
+            )));
+        }
+        let relative_path = shard
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| err(format!("compile shard {shard_id} missing path")))?;
+        let surface_start = json_u32(shard, "surface_start")?;
+        let surface_count = json_usize(shard, "surface_count")?;
+        let surface_end_exclusive = json_u32(shard, "surface_end_exclusive")?;
+        let expected_end = u64::from(surface_start) + surface_count as u64;
+        if expected_end != u64::from(surface_end_exclusive) {
+            return Err(err(format!(
+                "compile shard {shard_id} range mismatch: start {surface_start} + count {surface_count} != end {surface_end_exclusive}"
+            )));
+        }
+        let automaton_bytes = json_u64(shard, "automaton_bytes")?;
+        let path = compile_dir.join(relative_path);
+        if !path.exists() {
+            return Err(err(format!(
+                "compile shard {shard_id} automaton missing: {}",
+                path.display()
+            )));
+        }
+        let actual_bytes = path.metadata()?.len();
+        if actual_bytes != automaton_bytes {
+            return Err(err(format!(
+                "compile shard {shard_id} automaton bytes mismatch: manifest {automaton_bytes}, actual {actual_bytes}"
+            )));
+        }
+        result.push(CompileShard {
+            shard_id,
+            path,
+            surface_start,
+            surface_count,
+            surface_end_exclusive,
+            automaton_bytes,
+        });
+    }
+    Ok(result)
+}
+
+fn json_usize(object: &Value, field: &str) -> Result<usize> {
+    let value = json_u64(object, field)?;
+    usize::try_from(value).map_err(|_| err(format!("json field {field} overflows usize: {value}")))
+}
+
+fn json_u32(object: &Value, field: &str) -> Result<u32> {
+    let value = json_u64(object, field)?;
+    u32::try_from(value).map_err(|_| err(format!("json field {field} overflows u32: {value}")))
+}
+
+fn json_u64(object: &Value, field: &str) -> Result<u64> {
+    object
+        .get(field)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| err(format!("json object missing numeric field {field}")))
+}
+
+fn write_sharded_automaton_tables(
+    compile_shards: &[CompileShard],
+    shards_out_dir: &Path,
+    surface_utf16_lengths: &[u32],
+) -> Result<RuntimeAutomataStats> {
+    let mut shards = Vec::with_capacity(compile_shards.len());
+    let mut source_automaton_bytes = 0u64;
+    let mut state_output_count = 0usize;
+
+    for shard in compile_shards {
+        let shard_out_dir = shards_out_dir.join(format!("{:06}", shard.shard_id));
+        fs::create_dir_all(&shard_out_dir)?;
+        let automaton = write_automaton_tables(
+            &shard.path,
+            &shard_out_dir,
+            surface_utf16_lengths,
+            Some((shard.surface_start, shard.surface_end_exclusive)),
+        )?;
+        if automaton.output_count as usize != shard.surface_count {
+            return Err(err(format!(
+                "compile shard {} output count {} does not match manifest surface count {}",
+                shard.shard_id, automaton.output_count, shard.surface_count
+            )));
+        }
+        source_automaton_bytes += shard.automaton_bytes;
+        state_output_count += automaton.output_count as usize;
+        shards.push(RuntimeShardStats {
+            shard_id: shard.shard_id,
+            surface_start: shard.surface_start,
+            surface_count: shard.surface_count,
+            surface_end_exclusive: shard.surface_end_exclusive,
+            automaton,
+        });
+    }
+
+    Ok(RuntimeAutomataStats {
+        shard_count: shards.len(),
+        source_automaton_bytes,
+        state_output_count,
+        shards,
+    })
+}
+
 fn write_automaton_tables(
     automaton_path: &Path,
     automaton_out_dir: &Path,
     surface_utf16_lengths: &[u32],
+    expected_surface_range: Option<(u32, u32)>,
 ) -> Result<AutomatonStats> {
     let automaton_bytes = automaton_path.metadata()?.len();
     let mut reader = BufReader::new(File::open(automaton_path)?);
@@ -266,6 +413,13 @@ fn write_automaton_tables(
         let surface_id = read_u32(&mut reader)?;
         let _utf8_len = read_u32(&mut reader)?;
         let parent_output_pos = read_u32(&mut reader)?;
+        if let Some((start, end)) = expected_surface_range {
+            if surface_id < start || surface_id >= end {
+                return Err(err(format!(
+                    "automaton output surface_id {surface_id} is outside expected shard range [{start}, {end})"
+                )));
+            }
+        }
         let utf16_len = surface_utf16_lengths
             .get(surface_id as usize)
             .copied()
@@ -302,7 +456,7 @@ fn write_manifest(
     path: &Path,
     args: &Args,
     surface_stats: &SurfaceStats,
-    automaton_stats: &AutomatonStats,
+    automata_stats: &RuntimeAutomataStats,
 ) -> Result<()> {
     let mut file = BufWriter::new(File::create(path)?);
     writeln!(file, "{{")?;
@@ -325,10 +479,14 @@ fn write_manifest(
     )?;
     writeln!(file, "  \"endian\": \"little\",")?;
     writeln!(file, "  \"mode\": \"charwise\",")?;
-    writeln!(file, "  \"match_kind\": {},", automaton_stats.match_kind)?;
     writeln!(file, "  \"state_record_bytes\": 16,")?;
     writeln!(file, "  \"state_output_record_bytes\": 12,")?;
     writeln!(file, "  \"surface_qid_index_record_bytes\": 8,")?;
+    writeln!(
+        file,
+        "  \"qid_flag_disambiguation\": {},",
+        QID_FLAG_DISAMBIGUATION
+    )?;
     writeln!(
         file,
         "  \"surface_count\": {},",
@@ -345,38 +503,94 @@ fn write_manifest(
         "  \"flagged_qid_count\": {},",
         surface_stats.flagged_qid_count
     )?;
-    writeln!(file, "  \"states_len\": {},", automaton_stats.states_len)?;
-    writeln!(file, "  \"num_states\": {},", automaton_stats.num_states)?;
     writeln!(
         file,
-        "  \"mapper_table_len\": {},",
-        automaton_stats.mapper_table_len
-    )?;
-    writeln!(
-        file,
-        "  \"alphabet_size\": {},",
-        automaton_stats.alphabet_size
+        "  \"automaton_shard_count\": {},",
+        automata_stats.shard_count
     )?;
     writeln!(
         file,
         "  \"state_output_count\": {},",
-        automaton_stats.output_count
+        automata_stats.state_output_count
     )?;
     writeln!(
         file,
         "  \"source_automaton_bytes\": {},",
-        automaton_stats.automaton_bytes
+        automata_stats.source_automaton_bytes
     )?;
+    writeln!(file, "  \"automaton_shards\": [")?;
+    for (index, shard) in automata_stats.shards.iter().enumerate() {
+        let comma = if index + 1 == automata_stats.shards.len() {
+            ""
+        } else {
+            ","
+        };
+        writeln!(file, "    {{")?;
+        writeln!(file, "      \"shard_id\": {},", shard.shard_id)?;
+        writeln!(file, "      \"surface_start\": {},", shard.surface_start)?;
+        writeln!(file, "      \"surface_count\": {},", shard.surface_count)?;
+        writeln!(
+            file,
+            "      \"surface_end_exclusive\": {},",
+            shard.surface_end_exclusive
+        )?;
+        writeln!(
+            file,
+            "      \"match_kind\": {},",
+            shard.automaton.match_kind
+        )?;
+        writeln!(
+            file,
+            "      \"states_len\": {},",
+            shard.automaton.states_len
+        )?;
+        writeln!(
+            file,
+            "      \"num_states\": {},",
+            shard.automaton.num_states
+        )?;
+        writeln!(
+            file,
+            "      \"mapper_table_len\": {},",
+            shard.automaton.mapper_table_len
+        )?;
+        writeln!(
+            file,
+            "      \"alphabet_size\": {},",
+            shard.automaton.alphabet_size
+        )?;
+        writeln!(
+            file,
+            "      \"state_output_count\": {},",
+            shard.automaton.output_count
+        )?;
+        writeln!(
+            file,
+            "      \"source_automaton_bytes\": {},",
+            shard.automaton.automaton_bytes
+        )?;
+        writeln!(file, "      \"files\": {{")?;
+        writeln!(
+            file,
+            "        \"char_code_map\": \"automaton/shards/{:06}/char_code_map.bin\",",
+            shard.shard_id
+        )?;
+        writeln!(
+            file,
+            "        \"states\": \"automaton/shards/{:06}/states.bin\",",
+            shard.shard_id
+        )?;
+        writeln!(
+            file,
+            "        \"state_outputs\": \"automaton/shards/{:06}/state_outputs.bin\"",
+            shard.shard_id
+        )?;
+        writeln!(file, "      }}")?;
+        writeln!(file, "    }}{comma}")?;
+    }
+    writeln!(file, "  ],")?;
     writeln!(file, "  \"files\": {{")?;
-    writeln!(
-        file,
-        "    \"char_code_map\": \"automaton/char_code_map.bin\","
-    )?;
-    writeln!(file, "    \"states\": \"automaton/states.bin\",")?;
-    writeln!(
-        file,
-        "    \"state_outputs\": \"automaton/state_outputs.bin\","
-    )?;
+    writeln!(file, "    \"automaton_shards\": \"automaton/shards/\",")?;
     writeln!(
         file,
         "    \"surface_qid_index\": \"surfaces/surface_qid_index.bin\","
@@ -447,7 +661,7 @@ fn tmp_dir(out: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ac_compile::build_automaton_bytes;
+    use crate::ac_compile;
 
     #[test]
     fn postprocess_writes_surface_qid_tables() {
@@ -460,26 +674,23 @@ mod tests {
         let compile_dir = root.join("compile");
         let runtime_dir = root.join("runtime");
         fs::create_dir_all(&preprocess_dir).unwrap();
-        fs::create_dir_all(&compile_dir).unwrap();
         fs::write(
             preprocess_dir.join("surface_qids.tsv"),
-            "surface_key\tqids\tqid_count\n北京\tQ956\t1\n北京大学\tQ13371|Q3918\t2\n大学\tQ3918\t1\n",
+            "surface_key\tqids\tqid_count\n北京\tQ956\t1\n北京大学\tQ13371|Q3918\t2\n大学\tQ3918\t1\n上海\tQ8686\t1\n",
         )
         .unwrap();
         fs::write(
             preprocess_dir.join("qid_flags.tsv"),
-            "qid\tflags\nQ956\t0\nQ3918\t0\nQ13371\t1\n",
+            "qid\tflags\nQ956\t0\nQ3918\t0\nQ13371\t1\nQ8686\t0\n",
         )
         .unwrap();
-        fs::write(
-            compile_dir.join("automaton.bin"),
-            build_automaton_bytes(vec![
-                "北京".to_string(),
-                "北京大学".to_string(),
-                "大学".to_string(),
-            ])
-            .unwrap(),
-        )
+        ac_compile::run(ac_compile::Args {
+            preprocess: preprocess_dir.clone(),
+            out: compile_dir.clone(),
+            limit: None,
+            shard_size: 2,
+            progress_every: 10,
+        })
         .unwrap();
 
         run(Args {
@@ -496,27 +707,45 @@ mod tests {
         assert_eq!(read_u32_at(&index, 12), 2);
         assert_eq!(read_u32_at(&index, 16), 3);
         assert_eq!(read_u32_at(&index, 20), 1);
+        assert_eq!(read_u32_at(&index, 24), 4);
+        assert_eq!(read_u32_at(&index, 28), 1);
 
         let values = fs::read(runtime_dir.join("surfaces/surface_qid_values.bin")).unwrap();
         let values = values
             .chunks_exact(4)
             .map(read_u32_chunk)
             .collect::<Vec<_>>();
-        assert_eq!(values, vec![956, 13371, 3918, 3918]);
+        assert_eq!(values, vec![956, 13371, 3918, 3918, 8686]);
 
         let qid_numbers = fs::read(runtime_dir.join("qids/qid_numbers.bin")).unwrap();
         let qid_numbers = qid_numbers
             .chunks_exact(4)
             .map(read_u32_chunk)
             .collect::<Vec<_>>();
-        assert_eq!(qid_numbers, vec![956, 3918, 13371]);
+        assert_eq!(qid_numbers, vec![956, 3918, 8686, 13371]);
 
         let qid_flags = fs::read(runtime_dir.join("qids/qid_flags.bin")).unwrap();
         let qid_flags = qid_flags
             .chunks_exact(4)
             .map(read_u32_chunk)
             .collect::<Vec<_>>();
-        assert_eq!(qid_flags, vec![0, 0, 1]);
+        assert_eq!(qid_flags, vec![0, 0, 0, 1]);
+
+        for shard_id in ["000000", "000001"] {
+            assert!(runtime_dir
+                .join(format!("automaton/shards/{shard_id}/states.bin"))
+                .exists());
+            assert!(runtime_dir
+                .join(format!("automaton/shards/{shard_id}/char_code_map.bin"))
+                .exists());
+            assert!(runtime_dir
+                .join(format!("automaton/shards/{shard_id}/state_outputs.bin"))
+                .exists());
+        }
+        let manifest = fs::read_to_string(runtime_dir.join("manifest.json")).unwrap();
+        assert!(manifest.contains("\"automaton_shard_count\": 2"));
+        assert!(manifest.contains("\"surface_count\": 4"));
+        assert!(manifest.contains("\"qid_flag_disambiguation\": 1"));
 
         fs::remove_dir_all(root).unwrap();
     }
