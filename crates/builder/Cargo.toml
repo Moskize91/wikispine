@@ -1,0 +1,15 @@
+[package]
+name = "wikispine-builder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build Wikispine runtime datasets from Wikimedia dumps."
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "wikispine-builder"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"

@@ -1,0 +1,14 @@
+[package]
+name = "wikispine-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Serve and query Wikispine runtime datasets."
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "wikispine-runtime"
+path = "src/main.rs"
+
+[dependencies]

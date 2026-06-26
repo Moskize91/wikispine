@@ -14,7 +14,12 @@ It is separate from downstream editor integrations, plugins, and agent-facing ap
 
 ## Pipeline
 
-The dataset builder uses four stages:
+The project is split into two parts:
+
+- `wikispine-builder` builds runtime datasets from Wikimedia dumps.
+- `wikispine-runtime` serves or queries a built runtime dataset.
+
+The builder uses four stages:
 
 ```text
 download -> preprocess -> compile -> postprocess
@@ -67,13 +72,16 @@ build a `P31/P279` topology or entity type graph.
 ## Commands
 
 ```text
-wikispine download
-wikispine preprocess
-wikispine compile
-wikispine postprocess
+wikispine-builder download
+wikispine-builder preprocess
+wikispine-builder compile
+wikispine-builder postprocess
+
+wikispine-runtime
 ```
 
-Run any command with `--help` for options.
+Run builder commands with `--help` for options. The runtime crate is currently a placeholder for
+the service process that will consume `data/runtime/`.
 
 Default generated data layout:
 

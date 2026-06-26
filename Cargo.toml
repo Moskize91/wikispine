@@ -1,15 +1,12 @@
-[package]
-name = "wikispine"
+[workspace]
+members = [
+  "crates/builder",
+  "crates/runtime",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Compile Wikipedia and Wikidata surface text into local entity candidate indexes."
 repository = "https://github.com/Moskize91/wikispine"
-publish = false
-
-[[bin]]
-name = "wikispine"
-path = "src/main.rs"
-
-[dependencies]
-serde_json = "1"
