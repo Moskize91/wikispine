@@ -79,6 +79,7 @@ wikispine-builder postprocess
 
 wikispine init
 wikispine status
+wikispine --version
 wikispine match < input.txt > matches.ndjson
 wikispine serve --data-dir data/runtime --bind 127.0.0.1:8719
 ```
@@ -86,8 +87,32 @@ wikispine serve --data-dir data/runtime --bind 127.0.0.1:8719
 Run commands with `--help` for options. Runtime serves `POST /match` for HTTP NDJSON responses and
 `GET /match` for WebSocket streaming.
 
+The CLI version comes from the Cargo workspace package version. These forms are equivalent:
+
+```text
+wikispine --version
+wikispine -V
+wikispine version
+```
+
 `wikispine init` installs the runtime data archive from a built-in URL, a custom `--url`, or a
 local `--file`. All sources are verified against the built-in runtime data MD5.
+
+For local development on the current machine:
+
+```text
+scripts/install-local.sh
+```
+
+This builds the release CLI, installs it to `~/.local/bin/wikispine`, and moves `data/runtime` to
+the platform default runtime data directory.
+
+The first release matrix builds unsigned CLI archives for:
+
+- Linux x86_64
+- macOS Apple Silicon
+- macOS Intel
+- Windows x86_64
 
 Default generated data layout:
 
