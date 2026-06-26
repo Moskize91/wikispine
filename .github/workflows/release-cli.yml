@@ -1,0 +1,93 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: linux-x86_64
+            archive: tar.gz
+            bin: wikispine
+          - os: macos-15
+            target: aarch64-apple-darwin
+            artifact: macos-aarch64
+            archive: tar.gz
+            bin: wikispine
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: macos-x86_64
+            archive: tar.gz
+            bin: wikispine
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x86_64
+            archive: zip
+            bin: wikispine.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p wikispine-runtime --bin wikispine --target ${{ matrix.target }}
+
+      - name: Package Unix
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/wikispine-${{ matrix.artifact }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/wikispine-${{ matrix.artifact }}/"
+          tar -czf "dist/wikispine-${{ matrix.artifact }}.tar.gz" -C dist "wikispine-${{ matrix.artifact }}"
+
+      - name: Package Windows
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/wikispine-${{ matrix.artifact }}"
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/wikispine-${{ matrix.artifact }}/"
+          Compress-Archive -Path "dist/wikispine-${{ matrix.artifact }}" -DestinationPath "dist/wikispine-${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wikispine-${{ matrix.artifact }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip

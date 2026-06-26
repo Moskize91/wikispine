@@ -6,7 +6,7 @@
 
 - 当前仓库采用 Rust workspace 结构。
 - `crates/builder/` 是离线构造器，负责从 Wikimedia dump 生成 `data/runtime/`。
-- `crates/runtime/` 是运行时服务进程，负责消费 `data/runtime/` 并提供 HTTP/WebSocket 查询 API。
+- `crates/runtime/` 是发布给用户的 `wikispine` CLI，负责消费 `data/runtime/`，提供本地 pipe 查询、初始化安装和 HTTP/WebSocket 服务 API。
 - `docker/Dockerfile` 只面向 runtime 服务镜像。builder 不以 Docker 作为主要交付形态。
 - `data/` 下的所有内容都是生成产物，不应签入 git。
 

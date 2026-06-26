@@ -2,6 +2,34 @@
 
 Runtime 是一个读取 `data/runtime/` 的服务进程。它提供两种入口：HTTP 完整输入和 WebSocket 双向流。两者输出相同的 match event。
 
+本地 CLI 入口是 `wikispine match`，从 stdin 读取文本流并向 stdout 写出 NDJSON match event。服务入口是 `wikispine serve`。
+
+## CLI Install
+
+`wikispine init` 安装 runtime 数据包。默认从程序内置 URL 下载，也可以指定镜像 URL 或本地 ZIP 文件：
+
+```text
+wikispine init
+wikispine init --url https://example.com/wikispine-runtime-data.zip
+wikispine init --file /path/to/wikispine-runtime-data.zip
+```
+
+所有安装来源都必须通过程序内置 MD5 校验；CLI 不提供覆盖 MD5 的参数。当前默认 URL 和 MD5 仍是占位值，正式 runtime 数据包发布后需要更新代码常量。
+
+运行命令默认读取平台数据目录下的 runtime 数据，也允许用 `--data-dir` 静默覆盖：
+
+```text
+wikispine match --data-dir /path/to/runtime
+wikispine serve --data-dir /path/to/runtime
+```
+
+本地 release 第一版构造这些平台：
+
+- `linux-x86_64`
+- `macos-aarch64`
+- `macos-x86_64`
+- `windows-x86_64`
+
 ## HTTP Match
 
 `POST /match` 接收完整 JSON request。服务端在 request body 完整到达后开始识别，并以 NDJSON 流式返回结果。

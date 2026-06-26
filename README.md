@@ -17,7 +17,7 @@ It is separate from downstream editor integrations, plugins, and agent-facing ap
 The project is split into two parts:
 
 - `wikispine-builder` builds runtime datasets from Wikimedia dumps.
-- `wikispine-runtime` serves or queries a built runtime dataset.
+- `wikispine` serves or queries a built runtime dataset.
 
 The builder uses four stages:
 
@@ -77,11 +77,17 @@ wikispine-builder preprocess
 wikispine-builder compile
 wikispine-builder postprocess
 
-wikispine-runtime serve --dataset data/runtime --bind 127.0.0.1:8719
+wikispine init
+wikispine status
+wikispine match < input.txt > matches.ndjson
+wikispine serve --data-dir data/runtime --bind 127.0.0.1:8719
 ```
 
 Run commands with `--help` for options. Runtime serves `POST /match` for HTTP NDJSON responses and
 `GET /match` for WebSocket streaming.
+
+`wikispine init` installs the runtime data archive from a built-in URL, a custom `--url`, or a
+local `--file`. All sources are verified against the built-in runtime data MD5.
 
 Default generated data layout:
 
