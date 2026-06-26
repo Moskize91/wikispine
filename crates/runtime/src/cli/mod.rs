@@ -15,6 +15,7 @@ use zip::ZipArchive;
 const DEFAULT_RUNTIME_DATA_URL: &str = "https://example.com/wikispine-runtime-data.zip";
 const DEFAULT_RUNTIME_DATA_MD5: &str = "00000000000000000000000000000000";
 const DEFAULT_BIND: &str = "127.0.0.1:8719";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub async fn run(raw_args: Vec<String>) -> Result<()> {
     let Some(command) = raw_args.first().map(String::as_str) else {
@@ -31,6 +32,10 @@ pub async fn run(raw_args: Vec<String>) -> Result<()> {
         }
         "-h" | "--help" | "help" => {
             print_help();
+            Ok(())
+        }
+        "-V" | "--version" | "version" => {
+            print_version();
             Ok(())
         }
         unknown => Err(RuntimeError::new(format!("unknown command: {unknown}"))),
@@ -475,6 +480,14 @@ fn print_help() {
     println!("  status   Show runtime data status");
     println!("  match    Read text from stdin and write NDJSON matches to stdout");
     println!("  serve    Start HTTP/WebSocket runtime service");
+    println!("  version  Show CLI version");
+    println!();
+    println!("Options:");
+    println!("  -V, --version  Show CLI version");
+}
+
+fn print_version() {
+    println!("wikispine {VERSION}");
 }
 
 fn print_init_help() {
