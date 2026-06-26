@@ -2,6 +2,14 @@
 
 本文只描述 builder 四个离线步骤的职责、输入输出结构和注意事项，不展开内部实现。
 
+## Why
+
+Builder 的目标不是把 dump 一路“顺手处理”到服务可用，而是把几个性质完全不同的工作拆开：上游数据获取、语义归并、自动机编译、运行时打包。这四类工作在耗时、资源消耗、失败恢复方式和下游依赖上都不一样，混在一个步骤里会让重跑成本失控，也会让 runtime 误依赖中间产物。
+
+`download` 单独存在，是因为 raw dumps 很大、下载很慢，但内容不属于本项目 schema。只要上游文件没有变化，后续可以反复重建而不重新下载。`preprocess` 是语义中心，它把页面标题、重定向、Wikidata label/alias/sitelink 统一成唯一主表 `surface_key -> QID[]`，并确定全局 `surface_id`。这个阶段必须独立，因为它决定后续所有产物的身份空间。
+
+`compile` 只负责编译 surface key 到 Aho-Corasick 自动机，不读取 QID 候选。这样自动机可以按 surface 数量分片，避免一次性编译时内存爆掉；同时它的 output 只保留 `surface_id`，不会把 QID 表结构固化进自动机。`postprocess` 则把 preprocess 和 compile 的结果合并成 runtime 唯一需要的数据包。这样 runtime 的边界很窄：只读 `data/runtime/`，不关心 dumps、中间 TSV 或 builder 内部自动机格式。
+
 默认数据目录都位于仓库根目录的 `data/` 下，属于生成产物，不应签入 git。四个步骤是：
 
 ```text
