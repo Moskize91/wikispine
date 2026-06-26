@@ -310,7 +310,7 @@ fn extract_zip(archive_path: &Path, out_dir: &Path) -> Result<()> {
         let mut entry = archive
             .by_index(index)
             .map_err(|source| RuntimeError::new(format!("invalid zip entry: {source}")))?;
-        let Some(enclosed_name) = entry.enclosed_name().map(PathBuf::from) else {
+        let Some(enclosed_name) = entry.enclosed_name() else {
             continue;
         };
         let out_path = out_dir.join(enclosed_name);

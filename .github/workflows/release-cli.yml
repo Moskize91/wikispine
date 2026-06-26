@@ -4,11 +4,33 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 jobs:
+  check-version:
+    name: Check tag matches Cargo version
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "wikispine-runtime") | .version')"
+          expected_tag="v${version}"
+          if [[ "${tag}" != "${expected_tag}" ]]; then
+            echo "Tag ${tag} does not match Cargo package version ${version}."
+            echo "Expected tag: ${expected_tag}"
+            exit 1
+          fi
+          echo "Tag ${tag} matches Cargo package version ${version}."
+
   build:
     name: Build ${{ matrix.artifact }}
+    needs: check-version
     strategy:
       fail-fast: false
       matrix:

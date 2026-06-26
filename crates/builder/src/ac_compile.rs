@@ -105,7 +105,7 @@ pub fn run(args: Args) -> Result<()> {
         });
         total_surface_count += 1;
 
-        if total_surface_count % args.progress_every == 0 {
+        if total_surface_count.is_multiple_of(args.progress_every) {
             eprintln!(
                 "ingested surface_id={} surfaces={} shards={} pattern_bytes={}",
                 surface_id,
@@ -162,6 +162,7 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 pub fn build_automaton_bytes(patterns: Vec<String>) -> Result<Vec<u8>> {
     let entries = patterns
         .into_iter()
