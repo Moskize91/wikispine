@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{copy, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use wikispine_core::normalize::SURFACE_NORMALIZATION;
 
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -461,6 +462,11 @@ fn write_manifest(
     let mut file = BufWriter::new(File::create(path)?);
     writeln!(file, "{{")?;
     writeln!(file, "  \"format\": \"wikispine-runtime-v1\",")?;
+    writeln!(
+        file,
+        "  \"surface_normalization\": \"{}\",",
+        SURFACE_NORMALIZATION
+    )?;
     writeln!(file, "  \"generated_at_unix\": {},", generated_at_unix())?;
     writeln!(
         file,

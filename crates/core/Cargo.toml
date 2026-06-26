@@ -1,0 +1,13 @@
+[package]
+name = "wikispine-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared Wikispine text normalization primitives."
+repository.workspace = true
+publish = false
+
+[dependencies]
+unicode-casefold = "0.2.0"
+unicode-general-category = "1"
+unicode-normalization = "0.1"

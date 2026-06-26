@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::num::NonZeroU32;
 use std::path::Path;
+use wikispine_core::normalize::{NormalizedChar, SurfaceNormalizer, SURFACE_NORMALIZATION};
 
 const ROOT_STATE_ID: u32 = 0;
 const QID_FLAG_DISAMBIGUATION: u32 = 1;
@@ -30,6 +31,12 @@ impl RuntimeDataset {
         }
         if manifest.endian != "little" || manifest.mode != "charwise" {
             return Err(RuntimeError::new("unsupported runtime dataset encoding"));
+        }
+        if manifest.surface_normalization != SURFACE_NORMALIZATION {
+            return Err(RuntimeError::new(format!(
+                "unsupported surface normalization: {}",
+                manifest.surface_normalization
+            )));
         }
 
         let mut shards = Vec::with_capacity(manifest.automaton_shards.len());
@@ -67,8 +74,12 @@ impl RuntimeDataset {
     where
         F: FnMut(TextMatch) -> bool,
     {
-        for shard in &self.shards {
-            if !shard.for_each_match(text, self, options, &mut on_match) {
+        let mut session = MatchSession::new(self.shard_count(), options.clone());
+        for event in session.process_chunk(text, self) {
+            let ServerEvent::Match { r#match } = event else {
+                continue;
+            };
+            if !on_match(r#match) {
                 break;
             }
         }
@@ -135,7 +146,11 @@ impl RuntimeDataset {
 pub struct MatchSession {
     shard_states: Vec<u32>,
     options: MatchOptions,
+    normalizer: SurfaceNormalizer,
     pub offset_utf16: usize,
+    normalized_offset_utf16: usize,
+    normalized_original_starts: Vec<usize>,
+    normalized_original_ends: Vec<usize>,
     pub match_count: usize,
 }
 
@@ -144,35 +159,55 @@ impl MatchSession {
         Self {
             shard_states: vec![ROOT_STATE_ID; shard_count],
             options,
+            normalizer: SurfaceNormalizer::new(),
             offset_utf16: 0,
+            normalized_offset_utf16: 0,
+            normalized_original_starts: Vec::new(),
+            normalized_original_ends: Vec::new(),
             match_count: 0,
         }
     }
 
     pub fn reset(&mut self) {
         self.shard_states.fill(ROOT_STATE_ID);
+        self.normalizer.reset();
         self.offset_utf16 = 0;
+        self.normalized_offset_utf16 = 0;
+        self.normalized_original_starts.clear();
+        self.normalized_original_ends.clear();
         self.match_count = 0;
     }
 
     pub fn process_chunk(&mut self, chunk: &str, dataset: &RuntimeDataset) -> Vec<ServerEvent> {
+        let normalized = self.normalizer.normalize_chunk(chunk);
         let mut matches = Vec::new();
+        let mut context = ShardScanContext {
+            normalized_base_offset: self.normalized_offset_utf16,
+            original_base_offset: self.offset_utf16,
+            normalized_original_starts: &mut self.normalized_original_starts,
+            normalized_original_ends: &mut self.normalized_original_ends,
+            dataset,
+            options: &self.options,
+            matches: &mut matches,
+        };
         for (shard_index, shard) in dataset.shards.iter().enumerate() {
             let state_id = self
                 .shard_states
                 .get_mut(shard_index)
                 .expect("session shard states match runtime shards");
-            shard.find_matches_from_state(
-                chunk,
-                *state_id,
-                self.offset_utf16,
-                dataset,
-                &self.options,
-                &mut matches,
-            );
-            *state_id = shard.advance_state(chunk, *state_id);
+            shard.find_matches_from_state(&normalized, *state_id, &mut context);
+            *state_id = shard.advance_state(&normalized, *state_id);
         }
+        self.normalized_offset_utf16 += normalized
+            .iter()
+            .map(|item| item.ch.len_utf16())
+            .sum::<usize>();
         self.offset_utf16 += chunk.encode_utf16().count();
+        trim_original_end_map(
+            &mut self.normalized_original_starts,
+            &mut self.normalized_original_ends,
+            self.normalized_offset_utf16,
+        );
         matches.sort_by_key(|matched| (matched.start, matched.end, matched.surface_id));
         self.match_count += matches.len();
         matches
@@ -180,6 +215,16 @@ impl MatchSession {
             .map(|matched| ServerEvent::Match { r#match: matched })
             .collect()
     }
+}
+
+struct ShardScanContext<'a> {
+    normalized_base_offset: usize,
+    original_base_offset: usize,
+    normalized_original_starts: &'a mut Vec<usize>,
+    normalized_original_ends: &'a mut Vec<usize>,
+    dataset: &'a RuntimeDataset,
+    options: &'a MatchOptions,
+    matches: &'a mut Vec<TextMatch>,
 }
 
 #[derive(Debug)]
@@ -209,44 +254,29 @@ impl AutomatonShard {
         })
     }
 
-    pub fn for_each_match<F>(
-        &self,
-        text: &str,
-        dataset: &RuntimeDataset,
-        options: &MatchOptions,
-        on_match: &mut F,
-    ) -> bool
-    where
-        F: FnMut(TextMatch) -> bool,
-    {
-        let mut state_id = ROOT_STATE_ID;
-        for (end, character) in CharEndIterator::new(text) {
-            state_id = self.next_state_id(state_id, character);
-            if !self.for_each_output_at_state(state_id, end, dataset, options, on_match) {
-                return false;
-            }
-        }
-        true
-    }
-
     fn find_matches_from_state(
         &self,
-        text: &str,
+        text: &[NormalizedChar],
         mut state_id: u32,
-        base_offset: usize,
-        dataset: &RuntimeDataset,
-        options: &MatchOptions,
-        matches: &mut Vec<TextMatch>,
+        context: &mut ShardScanContext,
     ) {
-        for (end, character) in CharEndIterator::new(text) {
-            state_id = self.next_state_id(state_id, character);
-            self.push_outputs_at_state(state_id, base_offset + end, dataset, options, matches);
+        for (end, item) in NormalizedCharEndIterator::new(text) {
+            state_id = self.next_state_id(state_id, item.ch);
+            let normalized_end = context.normalized_base_offset + end;
+            let normalized_start = normalized_end - item.ch.len_utf16();
+            ensure_original_map_len(context.normalized_original_starts, normalized_end);
+            ensure_original_map_len(context.normalized_original_ends, normalized_end);
+            let original_start = context.original_base_offset + item.original_start_utf16;
+            let original_end = context.original_base_offset + item.original_end_utf16;
+            context.normalized_original_starts[normalized_start] = original_start;
+            context.normalized_original_ends[normalized_end] = original_end;
+            self.push_outputs_at_state(state_id, normalized_end, context);
         }
     }
 
-    fn advance_state(&self, text: &str, mut state_id: u32) -> u32 {
-        for character in text.chars() {
-            state_id = self.next_state_id(state_id, character);
+    fn advance_state(&self, text: &[NormalizedChar], mut state_id: u32) -> u32 {
+        for item in text {
+            state_id = self.next_state_id(state_id, item.ch);
         }
         state_id
     }
@@ -254,10 +284,8 @@ impl AutomatonShard {
     fn push_outputs_at_state(
         &self,
         state_id: u32,
-        end: usize,
-        dataset: &RuntimeDataset,
-        options: &MatchOptions,
-        matches: &mut Vec<TextMatch>,
+        normalized_end: usize,
+        context: &mut ShardScanContext,
     ) {
         let mut output_pos = self.state(state_id).and_then(|state| state.output_pos);
         while let Some(position) = output_pos {
@@ -265,66 +293,42 @@ impl AutomatonShard {
                 break;
             };
             output_pos = output.parent;
-            self.push_match(end, output, dataset, options, matches);
+            self.push_match(normalized_end, output, context);
         }
-    }
-
-    fn for_each_output_at_state<F>(
-        &self,
-        state_id: u32,
-        end: usize,
-        dataset: &RuntimeDataset,
-        options: &MatchOptions,
-        on_match: &mut F,
-    ) -> bool
-    where
-        F: FnMut(TextMatch) -> bool,
-    {
-        let mut output_pos = self.state(state_id).and_then(|state| state.output_pos);
-        while let Some(position) = output_pos {
-            let Some(output) = self.output(position) else {
-                break;
-            };
-            output_pos = output.parent;
-            if let Some(matched) = self.build_match(end, output, dataset, options) {
-                if !on_match(matched) {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     fn push_match(
         &self,
-        end: usize,
+        normalized_end: usize,
         output: StateOutput,
-        dataset: &RuntimeDataset,
-        options: &MatchOptions,
-        matches: &mut Vec<TextMatch>,
+        context: &mut ShardScanContext,
     ) {
-        if let Some(matched) = self.build_match(end, output, dataset, options) {
-            matches.push(matched);
+        if let Some(matched) = self.build_match(normalized_end, output, context) {
+            context.matches.push(matched);
         }
     }
 
     fn build_match(
         &self,
-        end: usize,
+        normalized_end: usize,
         output: StateOutput,
-        dataset: &RuntimeDataset,
-        options: &MatchOptions,
+        context: &ShardScanContext,
     ) -> Option<TextMatch> {
         let length = output.utf16_len as usize;
-        if length > end {
+        if length > normalized_end {
             return None;
         }
-        let qids = dataset.qids_for_surface(output.surface_id, options);
+        let normalized_start = normalized_end - length;
+        let start = *context.normalized_original_starts.get(normalized_start)?;
+        let end = *context.normalized_original_ends.get(normalized_end)?;
+        let qids = context
+            .dataset
+            .qids_for_surface(output.surface_id, context.options);
         if qids.is_empty() {
             return None;
         }
         Some(TextMatch {
-            start: end - length,
+            start,
             end,
             surface_id: output.surface_id,
             shard_id: self.shard_id,
@@ -391,6 +395,25 @@ impl AutomatonShard {
     }
 }
 
+fn ensure_original_map_len(map: &mut Vec<usize>, normalized_end: usize) {
+    if map.len() <= normalized_end {
+        map.resize(normalized_end + 1, 0);
+    }
+}
+
+fn trim_original_end_map(starts: &mut [usize], ends: &mut [usize], normalized_offset_utf16: usize) {
+    const KEEP_UTF16: usize = 4096;
+    if normalized_offset_utf16 > KEEP_UTF16 && ends.len() > KEEP_UTF16 * 2 {
+        let remove_until = normalized_offset_utf16 - KEEP_UTF16;
+        for index in 0..remove_until.min(ends.len()) {
+            if let Some(start) = starts.get_mut(index) {
+                *start = 0;
+            }
+            ends[index] = 0;
+        }
+    }
+}
+
 #[derive(Debug)]
 struct MmapTable {
     mmap: Mmap,
@@ -446,33 +469,34 @@ struct StateOutput {
     parent: Option<NonZeroU32>,
 }
 
-struct CharEndIterator<'a> {
-    inner: std::str::Chars<'a>,
+struct NormalizedCharEndIterator<'a> {
+    inner: std::slice::Iter<'a, NormalizedChar>,
     utf16_pos: usize,
 }
 
-impl<'a> CharEndIterator<'a> {
-    fn new(text: &'a str) -> Self {
+impl<'a> NormalizedCharEndIterator<'a> {
+    fn new(text: &'a [NormalizedChar]) -> Self {
         Self {
-            inner: text.chars(),
+            inner: text.iter(),
             utf16_pos: 0,
         }
     }
 }
 
-impl Iterator for CharEndIterator<'_> {
-    type Item = (usize, char);
+impl<'a> Iterator for NormalizedCharEndIterator<'a> {
+    type Item = (usize, &'a NormalizedChar);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let character = self.inner.next()?;
-        self.utf16_pos += character.len_utf16();
-        Some((self.utf16_pos, character))
+        let item = self.inner.next()?;
+        self.utf16_pos += item.ch.len_utf16();
+        Some((self.utf16_pos, item))
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     pub format: String,
+    pub surface_normalization: String,
     endian: String,
     mode: String,
     pub surface_count: usize,
