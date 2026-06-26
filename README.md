@@ -20,6 +20,17 @@ The dataset builder uses four stages:
 download -> preprocess -> compile -> postprocess
 ```
 
+`download` stores upstream Wikimedia files under `data/dumps/` by default. The default dataset
+inputs are:
+
+- `zhwiki` and `enwiki` `page.sql.gz`
+- `zhwiki` and `enwiki` `page_props.sql.gz`
+- `zhwiki` and `enwiki` `redirect.sql.gz`
+- Wikidata entities `latest-all.json.bz2`
+
+The directory is called `dumps` because these are upstream Wikimedia dump files. It is not a runtime
+artifact; it is only needed when rebuilding `preprocess` from raw sources.
+
 `preprocess` is the semantic center of the pipeline. It merges all supported surface text sources
 into one stable table:
 
@@ -63,3 +74,13 @@ wikispine postprocess
 ```
 
 Run any command with `--help` for options.
+
+Default generated data layout:
+
+```text
+data/
+  dumps/       # raw Wikimedia downloads
+  preprocess/  # surface_key -> QID[] and QID flags
+  compile/     # sharded Aho-Corasick automata
+  runtime/     # runtime-readable package
+```

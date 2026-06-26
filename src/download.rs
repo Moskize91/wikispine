@@ -257,3 +257,55 @@ fn partial_path(path: &Path) -> PathBuf {
         .unwrap_or("download");
     path.with_file_name(format!("{file_name}.part"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_download_targets_include_wikipedia_and_wikidata_dumps() {
+        let args = Args::default();
+        let targets = build_targets(&args).unwrap();
+        let paths = targets
+            .iter()
+            .map(|target| target.path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let urls = targets
+            .iter()
+            .map(|target| target.url.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(targets.len(), 7);
+        assert!(paths.contains(&"data/dumps/zhwiki/latest/zhwiki-latest-page.sql.gz".to_string()));
+        assert!(
+            paths.contains(&"data/dumps/zhwiki/latest/zhwiki-latest-redirect.sql.gz".to_string())
+        );
+        assert!(
+            paths.contains(&"data/dumps/zhwiki/latest/zhwiki-latest-page_props.sql.gz".to_string())
+        );
+        assert!(paths.contains(&"data/dumps/enwiki/latest/enwiki-latest-page.sql.gz".to_string()));
+        assert!(
+            paths.contains(&"data/dumps/enwiki/latest/enwiki-latest-redirect.sql.gz".to_string())
+        );
+        assert!(
+            paths.contains(&"data/dumps/enwiki/latest/enwiki-latest-page_props.sql.gz".to_string())
+        );
+        assert!(paths.contains(&"data/dumps/wikidatawiki/latest/latest-all.json.bz2".to_string()));
+        assert!(
+            urls.contains(&"https://dumps.wikimedia.org/wikidatawiki/entities/latest-all.json.bz2")
+        );
+    }
+
+    #[test]
+    fn dated_wikidata_entities_target_uses_wikidata_file_name() {
+        let target = wikidata_entities_target(Path::new("data/raw"), "20260601");
+        assert_eq!(
+            target.url,
+            "https://dumps.wikimedia.org/wikidatawiki/entities/20260601/wikidata-20260601-all.json.bz2"
+        );
+        assert_eq!(
+            target.path,
+            PathBuf::from("data/raw/wikidatawiki/20260601/wikidata-20260601-all.json.bz2")
+        );
+    }
+}
