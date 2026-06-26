@@ -77,11 +77,11 @@ wikispine-builder preprocess
 wikispine-builder compile
 wikispine-builder postprocess
 
-wikispine-runtime
+wikispine-runtime serve --dataset data/runtime --bind 127.0.0.1:8719
 ```
 
-Run builder commands with `--help` for options. The runtime crate is currently a placeholder for
-the service process that will consume `data/runtime/`.
+Run commands with `--help` for options. Runtime serves `POST /match` for HTTP NDJSON responses and
+`GET /match` for WebSocket streaming.
 
 Default generated data layout:
 
