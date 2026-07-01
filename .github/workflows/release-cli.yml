@@ -1,36 +1,71 @@
 name: Release CLI
 
+# Manual release workflow for the wikispine CLI binary only.
+# It does not run wikispine-builder and does not generate runtime datasets.
+
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-cli
+  cancel-in-progress: false
 
 jobs:
-  check-version:
-    name: Check tag matches Cargo version
+  prepare:
+    name: Prepare release
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check version
+      - name: Require main branch
         shell: bash
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          version="$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "wikispine-runtime") | .version')"
-          expected_tag="v${version}"
-          if [[ "${tag}" != "${expected_tag}" ]]; then
-            echo "Tag ${tag} does not match Cargo package version ${version}."
-            echo "Expected tag: ${expected_tag}"
+          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
+            echo "Release CLI must be run from main, got ${GITHUB_REF_NAME}." >&2
             exit 1
           fi
-          echo "Tag ${tag} matches Cargo package version ${version}."
 
-  build:
-    name: Build ${{ matrix.artifact }}
-    needs: check-version
+      - name: Read Cargo version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "wikispine-runtime") | .version')"
+          if [[ -z "${version}" || "${version}" == "null" ]]; then
+            echo "Could not read wikispine-runtime version from Cargo metadata." >&2
+            exit 1
+          fi
+          tag="v${version}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "Release version: ${version}"
+          echo "Release tag: ${tag}"
+
+      - name: Refuse duplicate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists. Bump the Cargo version before releasing again." >&2
+            exit 1
+          fi
+
+  package:
+    name: Package CLI ${{ matrix.artifact }}
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -67,25 +102,35 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build
+      - name: Build CLI binary
         run: cargo build --release -p wikispine-runtime --bin wikispine --target ${{ matrix.target }}
 
-      - name: Package Unix
+      - name: Package Unix CLI
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "dist/wikispine-${{ matrix.artifact }}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/wikispine-${{ matrix.artifact }}/"
-          tar -czf "dist/wikispine-${{ matrix.artifact }}.tar.gz" -C dist "wikispine-${{ matrix.artifact }}"
+          package="wikispine-${{ needs.prepare.outputs.version }}-${{ matrix.artifact }}"
+          mkdir -p "dist/${package}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/${package}/"
+          cp README.md LICENSE "dist/${package}/"
+          tar -czf "dist/${package}.tar.gz" -C dist "${package}"
+          cd dist
+          shasum -a 256 "${package}.tar.gz" > "${package}.tar.gz.sha256"
 
-      - name: Package Windows
+      - name: Package Windows CLI
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "dist/wikispine-${{ matrix.artifact }}"
-          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/wikispine-${{ matrix.artifact }}/"
-          Compress-Archive -Path "dist/wikispine-${{ matrix.artifact }}" -DestinationPath "dist/wikispine-${{ matrix.artifact }}.zip"
+          $package = "wikispine-${{ needs.prepare.outputs.version }}-${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path "dist/$package"
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "dist/$package/"
+          Copy-Item README.md, LICENSE "dist/$package/"
+          Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
+          Push-Location dist
+          (Get-FileHash "$package.zip" -Algorithm SHA256).Hash.ToLower() + "  $package.zip" |
+            Set-Content "$package.zip.sha256"
+          Pop-Location
 
       - uses: actions/upload-artifact@v4
         with:
@@ -93,23 +138,62 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.sha256
 
-  release:
+  publish:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
+    needs:
+      - prepare
+      - package
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      - name: Create and push release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.prepare.outputs.tag }}"
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists. Bump the Cargo version before releasing again." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Release ${tag}"
+          git push origin "${tag}"
+
+      - name: Create release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > RELEASE_NOTES.md <<'NOTES'
+          This release contains prebuilt `wikispine` CLI binaries only.
+
+          It does not include the runtime dataset. After installing the CLI, run:
+
+          ```bash
+          wikispine init
+          wikispine doctor
+          ```
+          NOTES
+
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: wikispine ${{ needs.prepare.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          fail_on_unmatched_files: true
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.sha256
