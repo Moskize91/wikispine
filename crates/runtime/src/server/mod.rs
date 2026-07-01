@@ -58,6 +58,7 @@ async fn readyz() -> &'static str {
 async fn metadata(State(runtime): State<Arc<RuntimeDataset>>) -> Json<MetadataResponse> {
     Json(MetadataResponse {
         format: runtime.manifest.format.clone(),
+        surface_normalization: runtime.manifest.surface_normalization.clone(),
         surface_count: runtime.manifest.surface_count,
         qid_count: runtime.manifest.qid_count,
         automaton_shard_count: runtime.manifest.automaton_shard_count,
@@ -205,6 +206,7 @@ struct MatchRequest {
 #[derive(Debug, Serialize)]
 struct MetadataResponse {
     format: String,
+    surface_normalization: String,
     surface_count: usize,
     qid_count: usize,
     automaton_shard_count: usize,

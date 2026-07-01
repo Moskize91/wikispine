@@ -1,120 +1,186 @@
 # wikispine
 
-`wikispine` is a Rust project for compiling Wikipedia and Wikidata surface text into local entity candidate indexes.
+`wikispine` is a local Wikipedia/Wikidata entity candidate matcher.
 
-The project is intended to focus on the upstream dataset-building side:
-
-- ingest Wikipedia/Wikidata dumps
-- normalize surface text
-- map surfaces to entity identifiers
-- compile compact lookup or matching indexes
-- emit runtime-friendly dataset artifacts
-
-It is separate from downstream editor integrations, plugins, and agent-facing application code.
-
-## Pipeline
-
-The project is split into two parts:
-
-- `wikispine-builder` builds runtime datasets from Wikimedia dumps.
-- `wikispine` serves or queries a built runtime dataset.
-
-The builder uses four stages:
+It loads a prebuilt runtime dataset and matches surface text in input documents, returning Wikidata
+QID candidates as NDJSON events. The released CLI is the runtime tool:
 
 ```text
-download -> preprocess -> compile -> postprocess
+wikispine init
+wikispine status
+wikispine doctor
+wikispine normalize "Ｗｉｋｉｐｅｄｉａ_Title"
+wikispine match --text "北京大学位于北京。"
+wikispine match < input.txt > matches.ndjson
+wikispine serve --bind 127.0.0.1:8719
 ```
 
-`download` stores upstream Wikimedia files under `data/dumps/` by default. The default dataset
-inputs are:
+The repository also contains `wikispine-builder`, an offline maintenance tool used to build
+`data/runtime/` from Wikimedia dumps. The builder is not the published user-facing CLI.
 
-- `zhwiki` and `enwiki` `page.sql.gz`
-- `zhwiki` and `enwiki` `page_props.sql.gz`
-- `zhwiki` and `enwiki` `redirect.sql.gz`
-- Wikidata entities `latest-all.json.bz2`
+## What It Does
 
-The directory is called `dumps` because these are upstream Wikimedia dump files. It is not a runtime
-artifact; it is only needed when rebuilding `preprocess` from raw sources.
-
-`preprocess` is the semantic center of the pipeline. It merges all supported surface text sources
-into one stable table:
+`wikispine` turns input text into local entity candidate matches:
 
 ```text
-surface_key -> QID[]
+input text -> surface match -> surface_id -> QID candidates
 ```
 
-The current surface sources are:
+The runtime data package contains compact Aho-Corasick automata plus surface-to-QID tables. It does
+not require raw Wikimedia dumps, preprocess TSV files, or compile intermediates.
 
-- Wikipedia page titles
-- Wikipedia redirect titles
-- Wikidata labels
-- Wikidata aliases
-- Wikidata sitelink titles
+Current entity identifiers are Wikidata QID numbers. The only QID metadata currently exposed is the
+disambiguation flag.
 
-The compiler only reads `surface_key` and builds an Aho-Corasick automaton whose output value is
-`surface_id`, defined as the row number in `surface_qids.tsv`.
+## Install Runtime Data
 
-Compilation is sharded because the full surface table is too large for ordinary local memory. Each
-shard contains at most `--shard-size` surface rows and still emits global `surface_id` values.
-Runtime query code should run all shard automatons and merge their matches.
+Install the default runtime data package:
 
-The runtime package maps:
+```bash
+wikispine init
+```
+
+Install from a custom URL or local archive:
+
+```bash
+wikispine init --url https://example.com/wikispine-runtime-data.zip
+wikispine init --file /path/to/wikispine-runtime-data.zip
+```
+
+All install sources are checked against the built-in runtime data MD5. Use `--data-dir` when you
+want to install or read a non-default runtime dataset:
+
+```bash
+wikispine init --data-dir /path/to/runtime
+wikispine status --data-dir /path/to/runtime
+```
+
+## Check The Dataset
+
+`status` opens the runtime dataset and prints the data directory, install metadata, format,
+normalization contract, surface count, QID count, and automaton shard count:
+
+```bash
+wikispine status
+```
+
+`doctor` performs a stricter operational check. It verifies that the manifest exists, the dataset can
+be loaded, and optionally that a service bind address is available:
+
+```bash
+wikispine doctor
+wikispine doctor --bind 127.0.0.1:8719
+```
+
+## Normalize Text
+
+Builder and runtime use the same surface normalization contract. Use `normalize` when debugging why
+two strings do or do not match:
+
+```bash
+wikispine normalize "Ｗｉｋｉｐｅｄｉａ_Title"
+# wikipedia title
+```
+
+If no text argument is provided, `normalize` reads stdin.
+
+## Match Text
+
+For a quick single input:
+
+```bash
+wikispine match --text "北京大学位于北京。"
+```
+
+For batch use, read UTF-8 text from stdin and write NDJSON to stdout:
+
+```bash
+wikispine match < input.txt > matches.ndjson
+```
+
+Each output line is a JSON event:
+
+```json
+{"type":"match","match":{"start":0,"end":4,"surface_id":93172679,"shard_id":1,"qids":[{"qid":"Q16952","qid_number":16952,"disambiguation":false}]}}
+{"type":"done","stats":{"matches":1}}
+```
+
+Match `start` and `end` are UTF-16 offsets in the original input text, matching JavaScript string
+indexing. Matching runs on normalized text internally, but offsets always refer to the original
+input.
+
+Useful options:
+
+```bash
+wikispine match --exclude-disambiguation < input.txt
+wikispine match --max-candidates-per-surface 3 < input.txt
+wikispine match --data-dir /path/to/runtime < input.txt
+```
+
+## Serve HTTP And WebSocket
+
+Start the runtime service:
+
+```bash
+wikispine serve --bind 127.0.0.1:8719
+```
+
+HTTP:
+
+```http
+POST /match
+Content-Type: application/json
+Accept: application/x-ndjson
+```
+
+```json
+{
+  "text": "北京大学位于北京。",
+  "options": {
+    "include_disambiguation": true,
+    "max_candidates_per_surface": 3
+  }
+}
+```
+
+The HTTP response is streamed NDJSON. `GET /match` upgrades to WebSocket for chunked streaming
+input. Health and metadata endpoints are:
 
 ```text
-input text -> surface_id -> QID[]
+GET /healthz
+GET /readyz
+GET /metadata
 ```
 
-There is no intermediate EID space. QIDs are stored directly as `u32` QID numbers. The only QID
-metadata currently retained is a direct disambiguation flag from Wikidata `P31 = Q4167410` plus the
-Wikipedia `page_props` disambiguation marker when available. The project intentionally does not
-build a `P31/P279` topology or entity type graph.
+See [docs/runtime-api.md](docs/runtime-api.md) for request and response details.
 
-## Commands
+## Surface Normalization
+
+Wikispine normalizes Wikipedia/Wikidata surface text and user input with the same rules:
+
+- Unicode NFKC compatibility normalization
+- full Unicode case folding
+- whitespace and visible separators collapsed to ASCII spaces
+- combining marks and default-ignorable characters removed
+- leading and trailing spaces trimmed
+
+See [docs/surface-normalization.md](docs/surface-normalization.md) for the full contract.
+
+## Maintainer Data Build
+
+The offline builder produces the runtime data package:
 
 ```text
 wikispine-builder download
 wikispine-builder preprocess
 wikispine-builder compile
 wikispine-builder postprocess
-
-wikispine init
-wikispine status
-wikispine --version
-wikispine match < input.txt > matches.ndjson
-wikispine serve --data-dir data/runtime --bind 127.0.0.1:8719
 ```
 
-Run commands with `--help` for options. Runtime serves `POST /match` for HTTP NDJSON responses and
-`GET /match` for WebSocket streaming.
+The pipeline is intentionally explicit because full builds are large, slow, and memory intensive.
+Generated data lives under `data/` and should not be committed.
 
-The CLI version comes from the Cargo workspace package version. These forms are equivalent:
-
-```text
-wikispine --version
-wikispine -V
-wikispine version
-```
-
-`wikispine init` installs the runtime data archive from a built-in URL, a custom `--url`, or a
-local `--file`. All sources are verified against the built-in runtime data MD5.
-
-For local development on the current machine:
-
-```text
-scripts/install-local.sh
-```
-
-This builds the release CLI, installs it to `~/.local/bin/wikispine`, and moves `data/runtime` to
-the platform default runtime data directory.
-
-The first release matrix builds unsigned CLI archives for:
-
-- Linux x86_64
-- macOS Apple Silicon
-- macOS Intel
-- Windows x86_64
-
-Default generated data layout:
+Default generated layout:
 
 ```text
 data/
@@ -122,4 +188,22 @@ data/
   preprocess/  # surface_key -> QID[] and QID flags
   compile/     # sharded Aho-Corasick automata
   runtime/     # runtime-readable package
+```
+
+See [docs/builder-pipeline.md](docs/builder-pipeline.md) for the builder contract.
+
+## Local Development
+
+Build and install the runtime CLI on the current machine:
+
+```bash
+scripts/install-local.sh
+```
+
+The workspace package version is used by:
+
+```bash
+wikispine --version
+wikispine -V
+wikispine version
 ```

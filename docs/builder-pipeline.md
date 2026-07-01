@@ -46,6 +46,8 @@ download -> preprocess -> compile -> postprocess
 
 `preprocess` 负责把 raw dumps 归并成项目自己的主表：`surface_key -> QID[]`。它同时生成 QID flag 表，目前只记录是否为消歧义页。
 
+`surface_key` 必须使用 `docs/surface-normalization.md` 中定义的标准化规则生成。该规则也是 runtime 查询文本进入自动机前使用的规则。
+
 输入：
 
 - `data/dumps/`

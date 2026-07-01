@@ -8,6 +8,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use wikispine_core::normalize::{normalize_surface_key, SURFACE_NORMALIZATION};
 
 #[derive(Debug, Clone)]
 pub struct Args {
@@ -50,6 +51,12 @@ struct WikidataSurfaceStats {
     entities: usize,
     surfaces: usize,
     disambiguation_qids: usize,
+}
+
+#[derive(Debug, Clone)]
+struct WikidataSurfaceScope {
+    language_codes: BTreeSet<String>,
+    sitelink_keys: BTreeSet<String>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -108,6 +115,7 @@ pub fn run(args: Args) -> Result<()> {
     eprintln!("processing Wikidata entity surfaces and disambiguation flags");
     let wikidata_stats = read_wikidata_surfaces_and_flags(
         &wikidata_entities_dump_path(&args.dumps, &args.date),
+        &WikidataSurfaceScope::from_wikis(&args.wikis),
         &mut surface_qids,
         &mut qid_flags,
         args.limit,
@@ -265,6 +273,7 @@ fn build_page_title_surfaces(pages: &HashMap<u64, Page>) -> Vec<SurfaceSource> {
 
 fn read_wikidata_surfaces_and_flags(
     path: &Path,
+    surface_scope: &WikidataSurfaceScope,
     surface_qids: &mut BTreeMap<String, BTreeSet<u32>>,
     qid_flags: &mut BTreeMap<u32, u32>,
     limit: Option<usize>,
@@ -296,7 +305,7 @@ fn read_wikidata_surfaces_and_flags(
         }
 
         let mut entity_surfaces = BTreeSet::<String>::new();
-        collect_wikidata_entity_surfaces(&entity, &mut entity_surfaces);
+        collect_wikidata_entity_surfaces(&entity, surface_scope, &mut entity_surfaces);
         for surface_key in entity_surfaces {
             surface_qids.entry(surface_key).or_default().insert(qid);
             stats.surfaces += 1;
@@ -322,17 +331,45 @@ fn read_wikidata_surfaces_and_flags(
     Ok(stats)
 }
 
-fn collect_wikidata_entity_surfaces(entity: &Value, surfaces: &mut BTreeSet<String>) {
+impl WikidataSurfaceScope {
+    fn from_wikis(wikis: &[String]) -> Self {
+        let mut language_codes = BTreeSet::new();
+        let mut sitelink_keys = BTreeSet::new();
+        for wiki in wikis {
+            sitelink_keys.insert(wiki.clone());
+            if let Some(language_code) = wiki.strip_suffix("wiki") {
+                if !language_code.is_empty() {
+                    language_codes.insert(language_code.to_string());
+                }
+            }
+        }
+        Self {
+            language_codes,
+            sitelink_keys,
+        }
+    }
+}
+
+fn collect_wikidata_entity_surfaces(
+    entity: &Value,
+    scope: &WikidataSurfaceScope,
+    surfaces: &mut BTreeSet<String>,
+) {
     if let Some(labels) = entity.get("labels").and_then(Value::as_object) {
-        for label in labels.values() {
-            if let Some(value) = label.get("value").and_then(Value::as_str) {
-                insert_surface(value, surfaces);
+        for language_code in &scope.language_codes {
+            if let Some(label) = labels.get(language_code) {
+                if let Some(value) = label.get("value").and_then(Value::as_str) {
+                    insert_surface(value, surfaces);
+                }
             }
         }
     }
 
     if let Some(aliases) = entity.get("aliases").and_then(Value::as_object) {
-        for alias_list in aliases.values() {
+        for language_code in &scope.language_codes {
+            let Some(alias_list) = aliases.get(language_code) else {
+                continue;
+            };
             let Some(alias_list) = alias_list.as_array() else {
                 continue;
             };
@@ -345,9 +382,11 @@ fn collect_wikidata_entity_surfaces(entity: &Value, surfaces: &mut BTreeSet<Stri
     }
 
     if let Some(sitelinks) = entity.get("sitelinks").and_then(Value::as_object) {
-        for sitelink in sitelinks.values() {
-            if let Some(title) = sitelink.get("title").and_then(Value::as_str) {
-                insert_surface(title, surfaces);
+        for sitelink_key in &scope.sitelink_keys {
+            if let Some(sitelink) = sitelinks.get(sitelink_key) {
+                if let Some(title) = sitelink.get("title").and_then(Value::as_str) {
+                    insert_surface(title, surfaces);
+                }
             }
         }
     }
@@ -376,15 +415,6 @@ fn entity_is_disambiguation(entity: &Value) -> bool {
             .and_then(qid_number_from_str)
             == Some(WIKIDATA_DISAMBIGUATION_QID)
     })
-}
-
-pub fn normalize_surface_key(value: &str) -> Option<String> {
-    let normalized = value.replace('_', " ").trim().to_string();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized)
-    }
 }
 
 fn write_surface_qids_tsv(
@@ -421,6 +451,11 @@ fn write_manifest(path: &Path, args: &Args, summaries: &[String]) -> Result<()> 
     let mut file = BufWriter::new(File::create(path)?);
     writeln!(file, "{{")?;
     writeln!(file, "  \"format\": \"wikispine-preprocess-v1\",")?;
+    writeln!(
+        file,
+        "  \"surface_normalization\": \"{}\",",
+        SURFACE_NORMALIZATION
+    )?;
     writeln!(file, "  \"generated_at_unix\": {},", generated_at_unix())?;
     writeln!(file, "  \"date\": \"{}\",", escape_json(&args.date))?;
     writeln!(
@@ -527,8 +562,9 @@ mod tests {
 
     #[test]
     fn normalizes_surface_keys() {
-        assert_eq!(normalize_surface_key("A_B"), Some("A B".to_string()));
-        assert_eq!(normalize_surface_key("  A  "), Some("A".to_string()));
+        assert_eq!(normalize_surface_key("A_B"), Some("a b".to_string()));
+        assert_eq!(normalize_surface_key("  A  "), Some("a".to_string()));
+        assert_eq!(normalize_surface_key("Café"), Some("cafe".to_string()));
         assert_eq!(normalize_surface_key("   "), None);
     }
 
@@ -545,17 +581,31 @@ mod tests {
     fn collects_labels_aliases_and_sitelinks() {
         let entity: Value = serde_json::from_str(
             r#"{
-              "labels":{"en":{"value":"Alpha"}},
-              "aliases":{"en":[{"value":"A_B"}]},
-              "sitelinks":{"enwiki":{"title":"Alpha_(letter)"}}
+              "labels":{"en":{"value":"Alpha"},"fr":{"value":"Alpha FR"}},
+              "aliases":{"en":[{"value":"A_B"}],"fr":[{"value":"A FR"}]},
+              "sitelinks":{"enwiki":{"title":"Alpha_(letter)"},"frwiki":{"title":"Alpha_fr"}}
             }"#,
         )
         .unwrap();
         let mut surfaces = BTreeSet::new();
-        collect_wikidata_entity_surfaces(&entity, &mut surfaces);
+        let scope = WikidataSurfaceScope::from_wikis(&["enwiki".to_string()]);
+        collect_wikidata_entity_surfaces(&entity, &scope, &mut surfaces);
         assert_eq!(
             surfaces.into_iter().collect::<Vec<_>>(),
-            vec!["A B", "Alpha", "Alpha (letter)"]
+            vec!["a b", "alpha", "alpha letter"]
+        );
+    }
+
+    #[test]
+    fn derives_wikidata_surface_scope_from_wikis() {
+        let scope = WikidataSurfaceScope::from_wikis(&["zhwiki".to_string(), "enwiki".to_string()]);
+        assert_eq!(
+            scope.language_codes.into_iter().collect::<Vec<_>>(),
+            vec!["en", "zh"]
+        );
+        assert_eq!(
+            scope.sitelink_keys.into_iter().collect::<Vec<_>>(),
+            vec!["enwiki", "zhwiki"]
         );
     }
 }

@@ -22,6 +22,7 @@
 
 - 涉及 builder 的 `download`、`preprocess`、`compile`、`postprocess` 四步职责和输入输出边界时，阅读 `docs/builder-pipeline.md`。
 - 涉及 runtime 服务加载、HTTP/WebSocket 查询 API、Docker 运行方式时，阅读 `docs/runtime-api.md`。
+- 涉及 surface text 标准化规则、跨语言查询对齐、匹配 offset 语义时，阅读 `docs/surface-normalization.md`。
 
 # 文档原则
 
