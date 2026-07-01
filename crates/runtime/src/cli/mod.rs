@@ -7,9 +7,10 @@ use serde::Serialize;
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use wikispine_core::normalize::normalize_surface_key;
 use zip::ZipArchive;
 
 const DEFAULT_RUNTIME_DATA_URL: &str = "https://example.com/wikispine-runtime-data.zip";
@@ -25,6 +26,8 @@ pub async fn run(raw_args: Vec<String>) -> Result<()> {
     match command {
         "init" => init(parse_init_args(&raw_args[1..])?),
         "status" => status(parse_status_args(&raw_args[1..])?),
+        "doctor" => doctor(parse_doctor_args(&raw_args[1..])?),
+        "normalize" => normalize(parse_normalize_args(&raw_args[1..])?),
         "match" => match_stdin(parse_match_args(&raw_args[1..])?),
         "serve" => {
             let args = parse_serve_args(&raw_args[1..])?;
@@ -60,9 +63,33 @@ struct StatusArgs {
 }
 
 #[derive(Debug)]
+struct DoctorArgs {
+    data_dir: PathBuf,
+    bind: Option<SocketAddr>,
+}
+
+#[derive(Debug)]
 struct MatchArgs {
     data_dir: PathBuf,
+    input: MatchInput,
     options: MatchOptions,
+}
+
+#[derive(Debug)]
+enum MatchInput {
+    Stdin,
+    Text(String),
+}
+
+#[derive(Debug)]
+struct NormalizeArgs {
+    input: NormalizeInput,
+}
+
+#[derive(Debug)]
+enum NormalizeInput {
+    Stdin,
+    Text(String),
 }
 
 #[derive(Debug)]
@@ -133,8 +160,78 @@ fn parse_status_args(args: &[String]) -> Result<StatusArgs> {
     Ok(StatusArgs { data_dir })
 }
 
+fn parse_doctor_args(args: &[String]) -> Result<DoctorArgs> {
+    let mut data_dir = default_data_dir()?;
+    let mut bind = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--data-dir" => {
+                index += 1;
+                data_dir = PathBuf::from(require_value(args, index, "--data-dir")?);
+            }
+            "--bind" => {
+                index += 1;
+                bind = Some(
+                    require_value(args, index, "--bind")?
+                        .parse::<SocketAddr>()
+                        .map_err(|source| RuntimeError::new(format!("invalid --bind: {source}")))?,
+                );
+            }
+            "-h" | "--help" => {
+                print_doctor_help();
+                std::process::exit(0);
+            }
+            unknown => {
+                return Err(RuntimeError::new(format!(
+                    "unknown doctor option: {unknown}"
+                )))
+            }
+        }
+        index += 1;
+    }
+    Ok(DoctorArgs { data_dir, bind })
+}
+
+fn parse_normalize_args(args: &[String]) -> Result<NormalizeArgs> {
+    let mut text = None::<String>;
+    let mut positionals = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--text" => {
+                index += 1;
+                text = Some(require_value(args, index, "--text")?.to_string());
+            }
+            "-h" | "--help" => {
+                print_normalize_help();
+                std::process::exit(0);
+            }
+            value if value.starts_with("--") => {
+                return Err(RuntimeError::new(format!(
+                    "unknown normalize option: {value}"
+                )))
+            }
+            value => positionals.push(value.to_string()),
+        }
+        index += 1;
+    }
+    if text.is_some() && !positionals.is_empty() {
+        return Err(RuntimeError::new(
+            "--text and positional input are mutually exclusive",
+        ));
+    }
+    let input = match text {
+        Some(value) => NormalizeInput::Text(value),
+        None if positionals.is_empty() => NormalizeInput::Stdin,
+        None => NormalizeInput::Text(positionals.join(" ")),
+    };
+    Ok(NormalizeArgs { input })
+}
+
 fn parse_match_args(args: &[String]) -> Result<MatchArgs> {
     let mut data_dir = default_data_dir()?;
+    let mut input = MatchInput::Stdin;
     let mut options = MatchOptions::default();
     let mut index = 0;
     while index < args.len() {
@@ -142,6 +239,10 @@ fn parse_match_args(args: &[String]) -> Result<MatchArgs> {
             "--data-dir" => {
                 index += 1;
                 data_dir = PathBuf::from(require_value(args, index, "--data-dir")?);
+            }
+            "--text" => {
+                index += 1;
+                input = MatchInput::Text(require_value(args, index, "--text")?.to_string());
             }
             "--exclude-disambiguation" => {
                 options.include_disambiguation = false;
@@ -170,7 +271,11 @@ fn parse_match_args(args: &[String]) -> Result<MatchArgs> {
         }
         index += 1;
     }
-    Ok(MatchArgs { data_dir, options })
+    Ok(MatchArgs {
+        data_dir,
+        input,
+        options,
+    })
 }
 
 fn parse_serve_args(args: &[String]) -> Result<ServeArgs> {
@@ -328,23 +433,105 @@ fn extract_zip(archive_path: &Path, out_dir: &Path) -> Result<()> {
 }
 
 fn status(args: StatusArgs) -> Result<()> {
+    println!("Runtime data directory: {}", args.data_dir.display());
+    println!("Default runtime data URL: {DEFAULT_RUNTIME_DATA_URL}");
+    println!("Expected archive MD5: {DEFAULT_RUNTIME_DATA_MD5}");
+    if let Some(state) = read_install_state(&args.data_dir)? {
+        println!("Installed archive MD5: {}", state.archive_md5);
+        println!("Installed at Unix time: {}", state.installed_at_unix);
+    }
     let runtime = RuntimeDataset::open(&args.data_dir)?;
-    println!("Runtime data: installed");
-    println!("Path: {}", args.data_dir.display());
+    println!("Status: installed and loadable");
     println!("Format: {}", runtime.manifest.format);
+    println!(
+        "Surface normalization: {}",
+        runtime.manifest.surface_normalization
+    );
     println!("Surfaces: {}", runtime.manifest.surface_count);
     println!("QIDs: {}", runtime.manifest.qid_count);
     println!("Shards: {}", runtime.manifest.automaton_shard_count);
     Ok(())
 }
 
+fn doctor(args: DoctorArgs) -> Result<()> {
+    println!("Data directory: {}", args.data_dir.display());
+    println!("Cache directory: {}", default_cache_dir()?.display());
+    check_path("manifest", &args.data_dir.join("manifest.json"))?;
+    let runtime = RuntimeDataset::open(&args.data_dir)?;
+    println!(
+        "Dataset: ok ({} surfaces, {} QIDs, {} shards)",
+        runtime.manifest.surface_count,
+        runtime.manifest.qid_count,
+        runtime.manifest.automaton_shard_count
+    );
+    if let Some(bind) = args.bind {
+        let listener = TcpListener::bind(bind)
+            .map_err(|source| RuntimeError::new(format!("cannot bind {bind}: {source}")))?;
+        drop(listener);
+        println!("Bind address: ok ({bind})");
+    }
+    println!("Result: ok");
+    Ok(())
+}
+
+fn check_path(label: &str, path: &Path) -> Result<()> {
+    if path.exists() {
+        println!("{label}: ok ({})", path.display());
+        Ok(())
+    } else {
+        Err(RuntimeError::new(format!(
+            "{label} not found: {}",
+            path.display()
+        )))
+    }
+}
+
+fn normalize(args: NormalizeArgs) -> Result<()> {
+    let input = match args.input {
+        NormalizeInput::Text(value) => value,
+        NormalizeInput::Stdin => {
+            let mut value = String::new();
+            io::stdin().read_to_string(&mut value)?;
+            value
+        }
+    };
+    println!("{}", normalize_surface_key(&input).unwrap_or_default());
+    Ok(())
+}
+
 fn match_stdin(args: MatchArgs) -> Result<()> {
     let runtime = RuntimeDataset::open(&args.data_dir)?;
     let mut session = MatchSession::new(runtime.shard_count(), args.options);
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
     let stdout = io::stdout();
     let mut writer = stdout.lock();
+    match args.input {
+        MatchInput::Stdin => {
+            match_reader(&mut io::stdin().lock(), &runtime, &mut session, &mut writer)?
+        }
+        MatchInput::Text(text) => {
+            for event in session.process_chunk(&text, &runtime) {
+                write_event(&mut writer, &event)?;
+            }
+        }
+    }
+    write_event(
+        &mut writer,
+        &ServerEvent::Done {
+            stats: MatchStats {
+                matches: session.match_count,
+            },
+        },
+    )?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn match_reader(
+    reader: &mut impl Read,
+    runtime: &RuntimeDataset,
+    session: &mut MatchSession,
+    writer: &mut impl Write,
+) -> Result<()> {
     let mut buffer = vec![0u8; 64 * 1024];
     let mut pending = Vec::<u8>::new();
 
@@ -362,22 +549,13 @@ fn match_stdin(args: MatchArgs) -> Result<()> {
         let chunk = std::str::from_utf8(&pending)
             .map_err(|source| RuntimeError::new(format!("invalid UTF-8 input: {source}")))?;
         for event in session.process_chunk(chunk, &runtime) {
-            write_event(&mut writer, &event)?;
+            write_event(&mut *writer, &event)?;
         }
         pending = rest;
     }
     if !pending.is_empty() {
         return Err(RuntimeError::new("stdin ended with incomplete UTF-8 input"));
     }
-    write_event(
-        &mut writer,
-        &ServerEvent::Done {
-            stats: MatchStats {
-                matches: session.match_count,
-            },
-        },
-    )?;
-    writer.flush()?;
     Ok(())
 }
 
@@ -394,11 +572,15 @@ fn write_event(writer: &mut impl Write, event: &ServerEvent) -> Result<()> {
     Ok(())
 }
 
-fn write_install_state(data_dir: &Path, md5: &str) -> Result<()> {
-    let state_path = data_dir
+fn install_state_path(data_dir: &Path) -> Result<PathBuf> {
+    Ok(data_dir
         .parent()
         .ok_or_else(|| RuntimeError::new("data directory has no parent"))?
-        .join("install.json");
+        .join("install.json"))
+}
+
+fn write_install_state(data_dir: &Path, md5: &str) -> Result<()> {
+    let state_path = install_state_path(data_dir)?;
     let state = InstallState {
         data_dir: data_dir.display().to_string(),
         archive_md5: md5.to_string(),
@@ -410,7 +592,15 @@ fn write_install_state(data_dir: &Path, md5: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Serialize)]
+fn read_install_state(data_dir: &Path) -> Result<Option<InstallState>> {
+    let state_path = install_state_path(data_dir)?;
+    if !state_path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_reader(File::open(state_path)?)?))
+}
+
+#[derive(serde::Deserialize, Serialize)]
 struct InstallState {
     data_dir: String,
     archive_md5: String,
@@ -474,16 +664,31 @@ fn unix_timestamp() -> u64 {
 
 fn print_help() {
     println!("wikispine");
+    println!("Local Wikipedia/Wikidata entity candidate matching.");
+    println!();
+    println!("Usage:");
+    println!("  wikispine <command> [options]");
     println!();
     println!("Commands:");
-    println!("  init     Download or install runtime data");
-    println!("  status   Show runtime data status");
-    println!("  match    Read text from stdin and write NDJSON matches to stdout");
-    println!("  serve    Start HTTP/WebSocket runtime service");
-    println!("  version  Show CLI version");
+    println!("  init       Download or install runtime data");
+    println!("  status     Show runtime data location and dataset metadata");
+    println!("  doctor     Check runtime data and optional service bind address");
+    println!("  normalize  Print the surface key produced by Wikispine normalization");
+    println!("  match      Read text and write NDJSON match events");
+    println!("  serve      Start the HTTP/WebSocket runtime service");
+    println!("  version    Show CLI version");
     println!();
     println!("Options:");
+    println!("  -h, --help     Show this help");
     println!("  -V, --version  Show CLI version");
+    println!();
+    println!("Examples:");
+    println!("  wikispine init");
+    println!("  wikispine status");
+    println!("  wikispine normalize \"Ｗｉｋｉｐｅｄｉａ_Title\"");
+    println!("  wikispine match --text \"北京大学位于北京。\"");
+    println!("  wikispine match < input.txt > matches.ndjson");
+    println!("  wikispine serve --bind 127.0.0.1:8719");
 }
 
 fn print_version() {
@@ -492,25 +697,61 @@ fn print_version() {
 
 fn print_init_help() {
     println!("Usage: wikispine init [options]");
+    println!();
+    println!("Download or install the runtime data package. All sources are verified");
+    println!("against the built-in archive MD5 before replacing the current data.");
+    println!();
     println!("  --url <url>        Download runtime data archive from URL");
     println!("  --file <path>      Install runtime data archive from local ZIP");
-    println!("  --data-dir <dir>   Install directory");
+    println!("  --data-dir <dir>   Install directory (default: platform data dir)");
 }
 
 fn print_status_help() {
     println!("Usage: wikispine status [options]");
+    println!();
+    println!("Open the runtime dataset and print metadata such as format,");
+    println!("normalization contract, surface count, QID count, and shard count.");
+    println!();
     println!("  --data-dir <dir>   Runtime data directory override");
 }
 
+fn print_doctor_help() {
+    println!("Usage: wikispine doctor [options]");
+    println!();
+    println!("Check that the runtime dataset exists and can be loaded. If --bind is");
+    println!("provided, also check that the service address can be bound.");
+    println!();
+    println!("  --data-dir <dir>   Runtime data directory override");
+    println!("  --bind <addr>      Optional bind address to test, e.g. 127.0.0.1:8719");
+}
+
+fn print_normalize_help() {
+    println!("Usage: wikispine normalize [options] [text]");
+    println!();
+    println!("Print the normalized surface key used by both builder and runtime.");
+    println!("If no text is provided, input is read from stdin.");
+    println!();
+    println!("  --text <text>      Text to normalize");
+}
+
 fn print_match_help() {
-    println!("Usage: wikispine match [options] < input.txt > matches.ndjson");
+    println!("Usage: wikispine match [options] [--text <text>] < input.txt > matches.ndjson");
+    println!();
+    println!("Match input text against the local runtime dataset and write NDJSON events.");
+    println!("Offsets in match events are UTF-16 offsets in the original input text.");
+    println!();
     println!("  --data-dir <dir>                    Runtime data directory override");
+    println!("  --text <text>                       Match a single text argument instead of stdin");
     println!("  --exclude-disambiguation            Exclude disambiguation QID candidates");
     println!("  --max-candidates-per-surface <n>    Limit QID candidates per surface");
 }
 
 fn print_serve_help() {
     println!("Usage: wikispine serve [options]");
+    println!();
+    println!("Start the runtime service. HTTP POST /match returns NDJSON match events;");
+    println!("WebSocket GET /match supports streaming chunks.");
+    println!();
     println!("  --data-dir <dir>   Runtime data directory override");
     println!("  --bind <addr>      HTTP bind address (default: 127.0.0.1:8719)");
 }
