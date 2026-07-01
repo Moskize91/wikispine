@@ -129,7 +129,8 @@ jobs:
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
           Push-Location dist
           (Get-FileHash "$package.zip" -Algorithm SHA256).Hash.ToLower() + "  $package.zip" |
-            Set-Content "$package.zip.sha256"
+            Set-Content -NoNewline "$package.zip.sha256"
+          Add-Content "$package.zip.sha256" "`n" -NoNewline
           Pop-Location
 
       - uses: actions/upload-artifact@v4

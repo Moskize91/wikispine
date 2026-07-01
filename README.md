@@ -18,6 +18,55 @@ wikispine serve --bind 127.0.0.1:8719
 The repository also contains `wikispine-builder`, an offline maintenance tool used to build
 `data/runtime/` from Wikimedia dumps. The builder is not the published user-facing CLI.
 
+## Install CLI
+
+Install the latest prebuilt CLI on macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Moskize91/wikispine/main/scripts/install.sh | sh
+```
+
+Install a specific released version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Moskize91/wikispine/main/scripts/install.sh | sh -s -- --version v0.1.0
+```
+
+The installer downloads the matching GitHub Release archive for your OS and CPU architecture,
+verifies its SHA256 checksum, and installs `wikispine` to `~/.local/bin` by default. Use
+`--bin-dir <dir>` to choose another install directory.
+
+Windows users can download `wikispine-<version>-windows-x86_64.zip` from
+[GitHub Releases](https://github.com/Moskize91/wikispine/releases), unzip it, and place
+`wikispine.exe` on `PATH`.
+
+After installing the CLI, install the runtime data package:
+
+```bash
+wikispine init
+wikispine doctor
+```
+
+## Versioning
+
+CLI releases use Git tags such as `v0.1.0`. The package file names include the same version, and the
+binary reports it with:
+
+```bash
+wikispine --version
+```
+
+These should agree:
+
+```text
+GitHub Release tag: v0.1.0
+Archive name:       wikispine-0.1.0-macos-aarch64.tar.gz
+CLI output:         wikispine 0.1.0
+```
+
+If you need a reproducible install, pass `--version vX.Y.Z` to the installer instead of using the
+latest release.
+
 ## What It Does
 
 `wikispine` turns input text into local entity candidate matches:
