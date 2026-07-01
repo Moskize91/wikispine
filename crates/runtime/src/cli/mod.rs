@@ -548,7 +548,7 @@ fn match_reader(
         let rest = pending.split_off(valid_len);
         let chunk = std::str::from_utf8(&pending)
             .map_err(|source| RuntimeError::new(format!("invalid UTF-8 input: {source}")))?;
-        for event in session.process_chunk(chunk, &runtime) {
+        for event in session.process_chunk(chunk, runtime) {
             write_event(&mut *writer, &event)?;
         }
         pending = rest;
