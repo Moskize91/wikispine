@@ -105,7 +105,7 @@ Server events:
 
 ## Service Container
 
-Docker 镜像只包含 `wikispine` runtime binary，不包含 `data/runtime/`。生产部署时应把 runtime 数据目录挂载到容器内，并通过环境变量指定：
+Docker 镜像只包含 `wikispine` runtime binary，不包含 `data/runtime/`。镜像声明 `/data/runtime` 为 volume；运行服务镜像时必须把 runtime 数据目录挂载到容器内，否则启动时会因为缺少 `manifest.json` 失败：
 
 ```text
 WIKISPINE_DATA_DIR=/data/runtime

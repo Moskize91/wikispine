@@ -12,6 +12,8 @@ COPY --from=builder /app/target/release/wikispine /usr/local/bin/wikispine
 ENV WIKISPINE_DATA_DIR=/data/runtime
 ENV PORT=9000
 
+VOLUME ["/data/runtime"]
+
 USER wikispine
 WORKDIR /home/wikispine
 EXPOSE 9000
