@@ -19,9 +19,6 @@ concurrency:
   group: publish-service-image
   cancel-in-progress: false
 
-env:
-  GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/wikispine-service
-
 jobs:
   publish:
     name: Build and publish service image
@@ -58,11 +55,13 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.version.outputs.tag }}"
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          ghcr_image="ghcr.io/${owner}/wikispine-service"
           tags=(
-            "--tag" "${GHCR_IMAGE}:${tag}"
+            "--tag" "${ghcr_image}:${tag}"
           )
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            tags+=("--tag" "${GHCR_IMAGE}:latest")
+            tags+=("--tag" "${ghcr_image}:latest")
           fi
           docker buildx build \
             --platform linux/amd64 \
