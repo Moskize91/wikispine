@@ -14,7 +14,8 @@ Options:
   --version <version>  Runtime data version, e.g. 2026-07-02 or zh-en-20260702
   --source <dir>      Runtime data directory (default: data/runtime)
   --out <dir>         Output directory (default: dist/runtime-data)
-  --url <url>         Public URL to write into config/runtime-data.json
+  --publish           Upload the generated ZIP to the configured Hugging Face dataset repo
+  --delete-zip        Delete the local ZIP after a successful --publish upload
   -h, --help          Show this help
 USAGE
 }
@@ -22,8 +23,12 @@ USAGE
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_dir="$repo_root/data/runtime"
 out_dir="$repo_root/dist/runtime-data"
+provider="huggingface"
+repo_id="moskize/wikispine-runtime"
+revision="main"
 version=""
-url=""
+publish=false
+delete_zip=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,9 +44,13 @@ while [[ $# -gt 0 ]]; do
       out_dir="$2"
       shift 2
       ;;
-    --url)
-      url="$2"
-      shift 2
+    --publish)
+      publish=true
+      shift
+      ;;
+    --delete-zip)
+      delete_zip=true
+      shift
       ;;
     -h|--help)
       usage
@@ -54,6 +63,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$delete_zip" == true && "$publish" != true ]]; then
+  echo "--delete-zip requires --publish" >&2
+  exit 1
+fi
 
 if [[ -z "$version" ]]; then
   echo "--version is required" >&2
@@ -72,6 +86,7 @@ if [[ ! -d "$source_dir" ]]; then
   echo "runtime data directory not found: $source_dir" >&2
   exit 1
 fi
+source_dir="$(cd "$source_dir" && pwd)"
 
 if [[ ! -f "$source_dir/manifest.json" ]]; then
   echo "runtime data manifest not found: $source_dir/manifest.json" >&2
@@ -97,6 +112,12 @@ else
   exit 1
 fi
 
+if [[ "$publish" == true ]] && ! command -v hf >/dev/null 2>&1; then
+  echo "required command not found: hf" >&2
+  echo "install with: pipx install 'huggingface_hub[hf_xet]'" >&2
+  exit 1
+fi
+
 created_date="$(date -u +%Y%m%d)"
 created_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 artifact="wikigraph-runtime-data-${version}-${created_date}.zip"
@@ -109,15 +130,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-staging="$tmp_dir/runtime"
-mkdir -p "$staging"
-
-echo "copying runtime data from $source_dir"
-if command -v rsync >/dev/null 2>&1; then
-  rsync -a --delete "$source_dir"/ "$staging"/
-else
-  (cd "$source_dir" && tar -cf - .) | (cd "$staging" && tar -xf -)
-fi
+ln -s "$source_dir" "$tmp_dir/runtime"
 
 echo "creating $archive_path"
 rm -f "$archive_path"
@@ -138,8 +151,10 @@ import sys
 path = pathlib.Path(sys.argv[1])
 data = {
     "version": "$version",
+    "provider": "$provider",
+    "repo_id": "$repo_id",
+    "revision": "$revision",
     "artifact": "$artifact",
-    "url": "$url",
     "archive_md5": "$archive_md5",
     "archive_bytes": int("$archive_bytes"),
     "created_at_utc": "$created_at_utc",
@@ -151,6 +166,21 @@ echo "wrote $config_path"
 echo "artifact: $artifact"
 echo "bytes: $archive_bytes"
 echo "md5: $archive_md5"
-if [[ -n "$url" ]]; then
-  echo "url: $url"
+echo "url: https://huggingface.co/datasets/$repo_id/resolve/$revision/$artifact"
+
+if [[ "$publish" == true ]]; then
+  echo "publishing $artifact to Hugging Face dataset $repo_id"
+  hf repos create "$repo_id" --repo-type dataset --public --exist-ok
+  HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}" hf upload \
+    "$repo_id" \
+    "$archive_path" \
+    "$artifact" \
+    --repo-type dataset \
+    --revision "$revision" \
+    --commit-message "Publish runtime data $version"
+  echo "published: https://huggingface.co/datasets/$repo_id/resolve/$revision/$artifact"
+  if [[ "$delete_zip" == true ]]; then
+    rm -f "$archive_path"
+    echo "deleted local archive: $archive_path"
+  fi
 fi

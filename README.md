@@ -89,14 +89,14 @@ Install the default runtime data package:
 wikispine init
 ```
 
-Install from a custom URL or local archive:
+Install from a custom mirror URL or local archive:
 
 ```bash
 wikispine init --url https://example.com/wikispine-runtime-data.zip
 wikispine init --file /path/to/wikispine-runtime-data.zip
 ```
 
-All install sources are checked against the built-in runtime data MD5. Use `--data-dir` when you
+All install sources are checked against the configured runtime data MD5. Use `--data-dir` when you
 want to install or read a non-default runtime dataset:
 
 ```bash

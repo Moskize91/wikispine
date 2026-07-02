@@ -20,8 +20,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Deserialize)]
 struct RuntimeDataConfig {
     version: String,
+    provider: String,
+    repo_id: String,
+    revision: String,
     artifact: String,
-    url: String,
     archive_md5: String,
     archive_bytes: u64,
     created_at_utc: String,
@@ -29,6 +31,35 @@ struct RuntimeDataConfig {
 
 fn runtime_data_config() -> Result<RuntimeDataConfig> {
     serde_json::from_str(RUNTIME_DATA_CONFIG_JSON).map_err(RuntimeError::from)
+}
+
+fn runtime_data_url(config: &RuntimeDataConfig) -> Result<String> {
+    if config.artifact.is_empty() {
+        return Err(RuntimeError::new(
+            "default runtime data artifact is not configured",
+        ));
+    }
+    match config.provider.as_str() {
+        "huggingface" => {
+            if config.repo_id.is_empty() {
+                return Err(RuntimeError::new(
+                    "default runtime data Hugging Face repo is not configured",
+                ));
+            }
+            let revision = if config.revision.is_empty() {
+                "main"
+            } else {
+                config.revision.as_str()
+            };
+            Ok(format!(
+                "https://huggingface.co/datasets/{}/resolve/{}/{}",
+                config.repo_id, revision, config.artifact
+            ))
+        }
+        provider => Err(RuntimeError::new(format!(
+            "unsupported runtime data provider: {provider}"
+        ))),
+    }
 }
 
 pub async fn run(raw_args: Vec<String>) -> Result<()> {
@@ -146,12 +177,7 @@ fn parse_init_args(args: &[String]) -> Result<InitArgs> {
         (Some(url), None) => InitSource::Url(url),
         (None, None) => {
             let config = runtime_data_config()?;
-            if config.url.is_empty() {
-                return Err(RuntimeError::new(
-                    "default runtime data URL is not configured",
-                ));
-            }
-            InitSource::Url(config.url)
+            InitSource::Url(runtime_data_url(&config)?)
         }
     };
     Ok(InitArgs { source, data_dir })
@@ -482,8 +508,14 @@ fn status(args: StatusArgs) -> Result<()> {
     let config = runtime_data_config()?;
     println!("Runtime data directory: {}", args.data_dir.display());
     println!("Runtime data version: {}", config.version);
+    println!("Runtime data provider: {}", config.provider);
+    println!("Runtime data repo: {}", config.repo_id);
+    println!("Runtime data revision: {}", config.revision);
     println!("Runtime data artifact: {}", config.artifact);
-    println!("Default runtime data URL: {}", config.url);
+    match runtime_data_url(&config) {
+        Ok(url) => println!("Default runtime data URL: {url}"),
+        Err(error) => println!("Default runtime data URL: not configured ({error})"),
+    }
     println!("Expected archive MD5: {}", config.archive_md5);
     println!("Expected archive bytes: {}", config.archive_bytes);
     println!("Runtime data config created: {}", config.created_at_utc);

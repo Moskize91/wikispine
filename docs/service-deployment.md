@@ -10,6 +10,16 @@ Package a built runtime directory:
 scripts/package-runtime-data.sh --version zh-en-20260702 --source /path/to/runtime
 ```
 
+Package and publish it to the public Hugging Face dataset repo:
+
+```bash
+scripts/package-runtime-data.sh \
+  --version zh-en-20260702 \
+  --source /path/to/runtime \
+  --publish \
+  --delete-zip
+```
+
 The generated artifact name is:
 
 ```text
@@ -22,8 +32,21 @@ The script writes archive metadata to:
 config/runtime-data.json
 ```
 
-That file records the runtime data version, artifact name, public URL, ZIP MD5, archive byte size,
-and creation time. The CLI uses the configured URL and MD5 for `wikispine init`.
+That file records the runtime data version, provider, Hugging Face dataset repo, artifact name, ZIP
+MD5, archive byte size, and creation time. The CLI derives the default download URL from those
+fields and verifies the ZIP MD5 during `wikispine init`.
+
+The default public dataset repo is:
+
+```text
+moskize/wikispine-runtime
+```
+
+The derived download URL is:
+
+```text
+https://huggingface.co/datasets/<repo_id>/resolve/<revision>/<artifact>
+```
 
 ## Docker Image
 
