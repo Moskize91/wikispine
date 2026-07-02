@@ -10,11 +10,6 @@ on:
         description: Image tag to publish, e.g. service-20260702 or service-20260702-1.
         required: true
         type: string
-      push_dockerhub:
-        description: Also push to Docker Hub using DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets.
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -58,13 +53,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        if: inputs.push_dockerhub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Build and push image
         shell: bash
         run: |
@@ -75,13 +63,6 @@ jobs:
           )
           if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
             tags+=("--tag" "${GHCR_IMAGE}:latest")
-          fi
-          if [[ "${{ inputs.push_dockerhub }}" == "true" ]]; then
-            dockerhub_image="${{ secrets.DOCKERHUB_USERNAME }}/wikispine-service"
-            tags+=("--tag" "${dockerhub_image}:${tag}")
-            if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-              tags+=("--tag" "${dockerhub_image}:latest")
-            fi
           fi
           docker buildx build \
             --platform linux/amd64 \
