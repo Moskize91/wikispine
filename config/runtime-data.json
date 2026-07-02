@@ -1,10 +1,11 @@
 {
-  "version": "unpublished",
-  "provider": "huggingface",
-  "repo_id": "moskize/wikispine-runtime",
-  "revision": "main",
-  "artifact": "",
-  "archive_md5": "",
-  "archive_bytes": 0,
-  "created_at_utc": ""
+  "default": "zh-en-20260702",
+  "packages": [
+    {
+      "version": "zh-en-20260702",
+      "archive_md5": "8e7b9fe9335fa289cd4781cd43cb8fdf",
+      "archive_bytes": 29396349847,
+      "created_at_utc": "2026-07-02T03:38:13Z"
+    }
+  ]
 }

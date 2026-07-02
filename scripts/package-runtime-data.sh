@@ -8,7 +8,7 @@ Usage: scripts/package-runtime-data.sh --version <version> [options]
 Package a built Wikispine runtime data directory as a zip archive and update
 config/runtime-data.json with artifact metadata. The generated artifact name is:
 
-  wikigraph-runtime-data-<version>-<YYYYMMDD>.zip
+  wikigraph-runtime-data-<version>.zip
 
 Options:
   --version <version>  Runtime data version, e.g. 2026-07-02 or zh-en-20260702
@@ -118,9 +118,8 @@ if [[ "$publish" == true ]] && ! command -v hf >/dev/null 2>&1; then
   exit 1
 fi
 
-created_date="$(date -u +%Y%m%d)"
 created_at_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-artifact="wikigraph-runtime-data-${version}-${created_date}.zip"
+artifact="wikigraph-runtime-data-${version}.zip"
 mkdir -p "$out_dir"
 archive_path="$out_dir/$artifact"
 tmp_dir="$(mktemp -d)"
@@ -149,15 +148,47 @@ import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
-data = {
+package = {
     "version": "$version",
-    "provider": "$provider",
-    "repo_id": "$repo_id",
-    "revision": "$revision",
-    "artifact": "$artifact",
     "archive_md5": "$archive_md5",
     "archive_bytes": int("$archive_bytes"),
     "created_at_utc": "$created_at_utc",
+}
+if path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"failed to parse {path}: {exc}") from exc
+else:
+    data = {}
+
+packages = data.get("packages")
+if packages is None:
+    # Migrate the pre-history single-package config shape.
+    if data.get("version") or data.get("artifact"):
+        packages = [{
+            "version": data.get("version", ""),
+            "archive_md5": data.get("archive_md5", ""),
+            "archive_bytes": data.get("archive_bytes", 0),
+            "created_at_utc": data.get("created_at_utc", ""),
+        }]
+    else:
+        packages = []
+elif not isinstance(packages, list):
+    raise SystemExit(f"{path}: packages must be an array")
+
+replaced = False
+for index, existing in enumerate(packages):
+    if existing.get("version") == package["version"]:
+        packages[index] = package
+        replaced = True
+        break
+if not replaced:
+    packages.append(package)
+
+data = {
+    "default": package["version"],
+    "packages": packages,
 }
 path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 PY

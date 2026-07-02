@@ -23,7 +23,7 @@ scripts/package-runtime-data.sh \
 The generated artifact name is:
 
 ```text
-wikigraph-runtime-data-<version>-<YYYYMMDD>.zip
+  wikigraph-runtime-data-<version>.zip
 ```
 
 The script writes archive metadata to:
@@ -32,9 +32,10 @@ The script writes archive metadata to:
 config/runtime-data.json
 ```
 
-That file records the runtime data version, provider, Hugging Face dataset repo, artifact name, ZIP
-MD5, archive byte size, and creation time. The CLI derives the default download URL from those
-fields and verifies the ZIP MD5 during `wikispine init`.
+That file records the runtime data version, ZIP MD5, archive byte size, and creation time. It has a
+`default` version plus a `packages` array, so older published runtime data packages remain
+discoverable for future CLI version selection. The CLI derives the artifact name and download URL
+from the selected version and verifies the ZIP MD5 during `wikispine init`.
 
 The default public dataset repo is:
 
@@ -45,7 +46,7 @@ moskize/wikispine-runtime
 The derived download URL is:
 
 ```text
-https://huggingface.co/datasets/<repo_id>/resolve/<revision>/<artifact>
+https://huggingface.co/datasets/moskize/wikispine-runtime/resolve/main/wikigraph-runtime-data-<version>.zip
 ```
 
 ## Docker Image
