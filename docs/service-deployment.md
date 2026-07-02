@@ -57,7 +57,9 @@ scripts/build-service-image.sh --tag wikispine-service:0.1.0 --load
 ```
 
 The repository also provides a manual GitHub Actions workflow, `Publish Service Image`, for
-publishing the lightweight image. By default it pushes to GitHub Container Registry:
+publishing the lightweight image. The workflow requires an explicit service image tag, such as
+`service-20260702` or `service-20260702-1`, because CLI binary releases and service image releases
+do not have to be synchronized. By default it pushes to GitHub Container Registry:
 
 ```text
 ghcr.io/<owner>/wikispine-service:<tag>

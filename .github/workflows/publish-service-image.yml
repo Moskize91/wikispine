@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Image tag to publish. Leave empty to use the Cargo package version.
-        required: false
+        description: Image tag to publish, e.g. service-20260702 or service-20260702-1.
+        required: true
         type: string
       push_dockerhub:
         description: Also push to Docker Hub using DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets.
@@ -35,20 +35,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read image tag
+      - name: Validate image tag
         id: version
         shell: bash
         run: |
           set -euo pipefail
-          input_tag="${{ inputs.tag }}"
-          if [[ -n "${input_tag}" ]]; then
-            tag="${input_tag}"
-          else
-            tag="v$(cargo metadata --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.name == "wikispine-runtime") | .version')"
-          fi
-          if [[ -z "${tag}" || "${tag}" == "vnull" ]]; then
-            echo "Could not resolve image tag." >&2
+          tag="${{ inputs.tag }}"
+          if [[ ! "${tag}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "Invalid image tag: ${tag}" >&2
+            echo "Use a Docker-compatible tag like service-20260702 or service-20260702-1." >&2
             exit 1
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
