@@ -36,14 +36,14 @@ fn runtime_data_config() -> Result<RuntimeDataConfig> {
 fn runtime_data_url(config: &RuntimeDataConfig) -> Result<String> {
     if config.artifact.is_empty() {
         return Err(RuntimeError::new(
-            "default runtime data artifact is not configured",
+            "default runtime data artifact is not configured; update config/runtime-data.json or pass --url/--file",
         ));
     }
     match config.provider.as_str() {
         "huggingface" => {
             if config.repo_id.is_empty() {
                 return Err(RuntimeError::new(
-                    "default runtime data Hugging Face repo is not configured",
+                    "default runtime data Hugging Face repo is not configured; update config/runtime-data.json or pass --url/--file",
                 ));
             }
             let revision = if config.revision.is_empty() {

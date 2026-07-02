@@ -204,6 +204,7 @@ fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptio
     let (sender, receiver) = mpsc::channel::<std::result::Result<Bytes, RuntimeError>>(32);
     tokio::task::spawn_blocking(move || {
         let mut matches = 0usize;
+        let mut interrupted = false;
         if state.shutdown.load(Ordering::SeqCst) {
             let _ = send_ndjson_event(
                 &sender,
@@ -215,18 +216,13 @@ fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptio
         }
         state.runtime.for_each_match(&text, &options, |matched| {
             if state.shutdown.load(Ordering::SeqCst) {
-                let _ = send_ndjson_event(
-                    &sender,
-                    ServerEvent::Interrupted {
-                        reason: "shutdown".to_string(),
-                    },
-                );
+                interrupted = true;
                 return false;
             }
             matches += 1;
             send_ndjson_event(&sender, ServerEvent::Match { r#match: matched })
         });
-        if state.shutdown.load(Ordering::SeqCst) {
+        if interrupted || state.shutdown.load(Ordering::SeqCst) {
             let _ = send_ndjson_event(
                 &sender,
                 ServerEvent::Interrupted {

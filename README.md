@@ -89,6 +89,9 @@ Install the default runtime data package:
 wikispine init
 ```
 
+Before the first public runtime package is published, default installation may be unavailable. In
+that case, use `--url` or `--file` with the configured runtime data archive.
+
 Install from a custom mirror URL or local archive:
 
 ```bash
