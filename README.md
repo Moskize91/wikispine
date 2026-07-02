@@ -203,6 +203,8 @@ GET /metadata
 
 See [docs/runtime-api.md](docs/runtime-api.md) for request and response details.
 
+For Docker service deployment, see [docs/service-deployment.md](docs/service-deployment.md).
+
 ## Surface Normalization
 
 Wikispine normalizes Wikipedia/Wikidata surface text and user input with the same rules:

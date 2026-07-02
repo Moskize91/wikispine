@@ -9,9 +9,12 @@ FROM debian:bookworm-slim
 RUN useradd --create-home --shell /usr/sbin/nologin wikispine
 COPY --from=builder /app/target/release/wikispine /usr/local/bin/wikispine
 
+ENV WIKISPINE_DATA_DIR=/data/runtime
+ENV PORT=9000
+
 USER wikispine
 WORKDIR /home/wikispine
-EXPOSE 8719
+EXPOSE 9000
 
 ENTRYPOINT ["wikispine"]
-CMD ["serve", "--dataset", "/data/runtime", "--bind", "0.0.0.0:8719"]
+CMD ["serve"]

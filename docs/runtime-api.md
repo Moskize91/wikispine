@@ -16,7 +16,7 @@ wikispine init --url https://example.com/wikispine-runtime-data.zip
 wikispine init --file /path/to/wikispine-runtime-data.zip
 ```
 
-所有安装来源都必须通过程序内置 MD5 校验；CLI 不提供覆盖 MD5 的参数。当前默认 URL 和 MD5 仍是占位值，正式 runtime 数据包发布后需要更新代码常量。
+所有安装来源都必须通过 `config/runtime-data.json` 中记录的 ZIP MD5 校验；CLI 不提供覆盖 MD5 的参数。当前默认 URL 和 MD5 仍是占位值，正式 runtime 数据包发布后需要更新该配置文件。
 
 运行命令默认读取平台数据目录下的 runtime 数据，也允许用 `--data-dir` 静默覆盖：
 
@@ -102,3 +102,16 @@ Server events:
 - `GET /healthz` 返回进程健康状态。
 - `GET /readyz` 返回 dataset 已加载状态。
 - `GET /metadata` 返回 runtime 数据集规模和格式信息。
+
+## Service Container
+
+Docker 镜像只包含 `wikispine` runtime binary，不包含 `data/runtime/`。生产部署时应把 runtime 数据目录挂载到容器内，并通过环境变量指定：
+
+```text
+WIKISPINE_DATA_DIR=/data/runtime
+PORT=9000
+```
+
+`wikispine serve` 会优先读取 `WIKISPINE_DATA_DIR` 作为数据目录，优先读取 `WIKISPINE_BIND` 或 `PORT` 作为监听地址。`PORT=9000` 时监听 `0.0.0.0:9000`。
+
+`POST /match` 是完整 JSON request，服务端允许最多 32 MiB request body。更大的输入应拆成多个请求，或使用 WebSocket chunk 流。

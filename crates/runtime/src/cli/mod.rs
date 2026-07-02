@@ -3,7 +3,7 @@ use crate::server;
 use crate::{Result, RuntimeError};
 use md5::{Digest, Md5};
 use reqwest::blocking::Client;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read, Write};
@@ -13,10 +13,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use wikispine_core::normalize::normalize_surface_key;
 use zip::ZipArchive;
 
-const DEFAULT_RUNTIME_DATA_URL: &str = "https://example.com/wikispine-runtime-data.zip";
-const DEFAULT_RUNTIME_DATA_MD5: &str = "00000000000000000000000000000000";
+const RUNTIME_DATA_CONFIG_JSON: &str = include_str!("../../../../config/runtime-data.json");
 const DEFAULT_BIND: &str = "127.0.0.1:8719";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Debug, Deserialize)]
+struct RuntimeDataConfig {
+    version: String,
+    artifact: String,
+    url: String,
+    archive_md5: String,
+    archive_bytes: u64,
+    created_at_utc: String,
+}
+
+fn runtime_data_config() -> Result<RuntimeDataConfig> {
+    serde_json::from_str(RUNTIME_DATA_CONFIG_JSON).map_err(RuntimeError::from)
+}
 
 pub async fn run(raw_args: Vec<String>) -> Result<()> {
     let Some(command) = raw_args.first().map(String::as_str) else {
@@ -131,7 +144,15 @@ fn parse_init_args(args: &[String]) -> Result<InitArgs> {
     let source = match (url, file) {
         (_, Some(path)) => InitSource::File(path),
         (Some(url), None) => InitSource::Url(url),
-        (None, None) => InitSource::Url(DEFAULT_RUNTIME_DATA_URL.to_string()),
+        (None, None) => {
+            let config = runtime_data_config()?;
+            if config.url.is_empty() {
+                return Err(RuntimeError::new(
+                    "default runtime data URL is not configured",
+                ));
+            }
+            InitSource::Url(config.url)
+        }
     };
     Ok(InitArgs { source, data_dir })
 }
@@ -279,8 +300,10 @@ fn parse_match_args(args: &[String]) -> Result<MatchArgs> {
 }
 
 fn parse_serve_args(args: &[String]) -> Result<ServeArgs> {
-    let mut data_dir = default_data_dir()?;
-    let mut bind = DEFAULT_BIND.parse::<SocketAddr>().unwrap();
+    let mut data_dir = env::var_os("WIKISPINE_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(default_data_dir()?);
+    let mut bind = default_bind()?;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -309,6 +332,23 @@ fn parse_serve_args(args: &[String]) -> Result<ServeArgs> {
     Ok(ServeArgs { data_dir, bind })
 }
 
+fn default_bind() -> Result<SocketAddr> {
+    if let Some(value) = env::var_os("WIKISPINE_BIND") {
+        return value
+            .to_string_lossy()
+            .parse::<SocketAddr>()
+            .map_err(|source| RuntimeError::new(format!("invalid WIKISPINE_BIND: {source}")));
+    }
+    if let Some(value) = env::var_os("PORT") {
+        let port = value
+            .to_string_lossy()
+            .parse::<u16>()
+            .map_err(|source| RuntimeError::new(format!("invalid PORT: {source}")))?;
+        return Ok(SocketAddr::from(([0, 0, 0, 0], port)));
+    }
+    Ok(DEFAULT_BIND.parse::<SocketAddr>().unwrap())
+}
+
 fn require_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&'a str> {
     args.get(index)
         .map(String::as_str)
@@ -317,15 +357,21 @@ fn require_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&
 }
 
 fn init(args: InitArgs) -> Result<()> {
+    let config = runtime_data_config()?;
+    if config.archive_md5.is_empty() {
+        return Err(RuntimeError::new(
+            "runtime data archive MD5 is not configured",
+        ));
+    }
     let archive_path = match args.source {
         InitSource::Url(url) => download_archive(&url)?,
         InitSource::File(path) => path,
     };
     let actual_md5 = md5_file(&archive_path)?;
-    if actual_md5 != DEFAULT_RUNTIME_DATA_MD5 {
+    if actual_md5 != config.archive_md5 {
         return Err(RuntimeError::new(format!(
             "runtime data MD5 mismatch: expected {}, got {}",
-            DEFAULT_RUNTIME_DATA_MD5, actual_md5
+            config.archive_md5, actual_md5
         )));
     }
 
@@ -433,9 +479,14 @@ fn extract_zip(archive_path: &Path, out_dir: &Path) -> Result<()> {
 }
 
 fn status(args: StatusArgs) -> Result<()> {
+    let config = runtime_data_config()?;
     println!("Runtime data directory: {}", args.data_dir.display());
-    println!("Default runtime data URL: {DEFAULT_RUNTIME_DATA_URL}");
-    println!("Expected archive MD5: {DEFAULT_RUNTIME_DATA_MD5}");
+    println!("Runtime data version: {}", config.version);
+    println!("Runtime data artifact: {}", config.artifact);
+    println!("Default runtime data URL: {}", config.url);
+    println!("Expected archive MD5: {}", config.archive_md5);
+    println!("Expected archive bytes: {}", config.archive_bytes);
+    println!("Runtime data config created: {}", config.created_at_utc);
     if let Some(state) = read_install_state(&args.data_dir)? {
         println!("Installed archive MD5: {}", state.archive_md5);
         println!("Installed at Unix time: {}", state.installed_at_unix);
@@ -699,7 +750,7 @@ fn print_init_help() {
     println!("Usage: wikispine init [options]");
     println!();
     println!("Download or install the runtime data package. All sources are verified");
-    println!("against the built-in archive MD5 before replacing the current data.");
+    println!("against the configured archive MD5 before replacing the current data.");
     println!();
     println!("  --url <url>        Download runtime data archive from URL");
     println!("  --file <path>      Install runtime data archive from local ZIP");
@@ -753,5 +804,7 @@ fn print_serve_help() {
     println!("WebSocket GET /match supports streaming chunks.");
     println!();
     println!("  --data-dir <dir>   Runtime data directory override");
+    println!("                     Env fallback: WIKISPINE_DATA_DIR");
     println!("  --bind <addr>      HTTP bind address (default: 127.0.0.1:8719)");
+    println!("                     Env fallback: WIKISPINE_BIND or PORT");
 }
