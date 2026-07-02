@@ -114,6 +114,4 @@ PORT=9000
 
 `wikispine serve` 会优先读取 `WIKISPINE_DATA_DIR` 作为数据目录，优先读取 `WIKISPINE_BIND` 或 `PORT` 作为监听地址。`PORT=9000` 时监听 `0.0.0.0:9000`。
 
-生产部署可以设置 `WIKISPINE_MEMORY_RESERVE`，让进程启动时分配并触碰指定大小的匿名内存，例如 `WIKISPINE_MEMORY_RESERVE=48G`。这个开关用于尽早暴露容器内存规格不足的问题，不会预读 runtime 数据文件；支持 `K/M/G/T` 和 `KiB/MiB/GiB/TiB` 后缀，未设置、`0`、`off` 或 `none` 表示关闭。
-
 `POST /match` 是完整 JSON request，服务端允许最多 32 MiB request body。更大的输入应拆成多个请求，或使用 WebSocket chunk 流。

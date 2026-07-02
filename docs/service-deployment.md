@@ -68,24 +68,6 @@ docker run --rm \
 
 The service listens on `0.0.0.0:$PORT`; the image default is `PORT=9000`.
 
-For managed container deployments, set `WIKISPINE_MEMORY_RESERVE` to make the process allocate and
-touch startup memory before loading the runtime dataset:
-
-```bash
-docker run --rm \
-  --memory=64g \
-  --memory-swap=64g \
-  -p 9000:9000 \
-  -e WIKISPINE_DATA_DIR=/data/runtime \
-  -e WIKISPINE_MEMORY_RESERVE=48G \
-  -v /path/to/runtime:/data/runtime:ro \
-  wikispine-service:0.1.0
-```
-
-This is a capacity check, not a runtime-data preload. It intentionally fails early when the
-configured container memory is too small. Supported suffixes are `K/M/G/T` and
-`KiB/MiB/GiB/TiB`; unset, `0`, `off`, and `none` disable the reserve.
-
 Health checks:
 
 ```bash
