@@ -11,6 +11,7 @@ use axum::{Json, Router};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +21,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 const MATCH_HTTP_BODY_LIMIT: usize = 32 * 1024 * 1024;
+const MEMORY_RESERVE_ENV: &str = "WIKISPINE_MEMORY_RESERVE";
 
 #[derive(Clone)]
 struct AppState {
@@ -28,6 +30,7 @@ struct AppState {
 }
 
 pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
+    let _memory_reserve = reserve_startup_memory_from_env()?;
     eprintln!("loading dataset {}", dataset.display());
     let runtime = Arc::new(RuntimeDataset::open(dataset)?);
     eprintln!(
@@ -60,6 +63,66 @@ pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
     Ok(())
 }
 
+fn reserve_startup_memory_from_env() -> Result<Option<Vec<u8>>> {
+    let Some(value) = env::var_os(MEMORY_RESERVE_ENV) else {
+        return Ok(None);
+    };
+    let value = value.to_string_lossy();
+    let bytes = parse_memory_size(&value)?;
+    if bytes == 0 {
+        return Ok(None);
+    }
+    eprintln!("reserving startup memory from {MEMORY_RESERVE_ENV}={value} ({bytes} bytes)");
+    let mut reserve = vec![0u8; bytes];
+    touch_memory_pages(&mut reserve);
+    eprintln!("reserved startup memory: {bytes} bytes");
+    Ok(Some(reserve))
+}
+
+fn touch_memory_pages(bytes: &mut [u8]) {
+    const PAGE_SIZE: usize = 4096;
+    for index in (0..bytes.len()).step_by(PAGE_SIZE) {
+        bytes[index] = bytes[index].wrapping_add(1);
+    }
+    if let Some(last) = bytes.last_mut() {
+        *last = last.wrapping_add(1);
+    }
+}
+
+fn parse_memory_size(raw: &str) -> Result<usize> {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("off") {
+        return Ok(0);
+    }
+    let split_at = value
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(value.len());
+    if split_at == 0 {
+        return Err(RuntimeError::new(format!(
+            "{MEMORY_RESERVE_ENV} must be a byte count or size like 48G"
+        )));
+    }
+    let number = value[..split_at]
+        .parse::<usize>()
+        .map_err(|source| RuntimeError::new(format!("invalid {MEMORY_RESERVE_ENV}: {source}")))?;
+    let suffix = value[split_at..].trim().to_ascii_lowercase();
+    let multiplier = match suffix.as_str() {
+        "" | "b" => 1usize,
+        "k" | "kb" | "ki" | "kib" => 1024usize,
+        "m" | "mb" | "mi" | "mib" => 1024usize.pow(2),
+        "g" | "gb" | "gi" | "gib" => 1024usize.pow(3),
+        "t" | "tb" | "ti" | "tib" => 1024usize.pow(4),
+        _ => {
+            return Err(RuntimeError::new(format!(
+                "invalid {MEMORY_RESERVE_ENV} suffix: {suffix}"
+            )))
+        }
+    };
+    number
+        .checked_mul(multiplier)
+        .ok_or_else(|| RuntimeError::new(format!("{MEMORY_RESERVE_ENV} is too large")))
+}
+
 async fn shutdown_signal(shutdown: Arc<AtomicBool>) {
     #[cfg(unix)]
     {
@@ -81,6 +144,21 @@ async fn shutdown_signal(shutdown: Arc<AtomicBool>) {
         let _ = tokio::signal::ctrl_c().await;
     }
     shutdown.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_memory_size;
+
+    #[test]
+    fn parses_memory_reserve_sizes() {
+        assert_eq!(parse_memory_size("").unwrap(), 0);
+        assert_eq!(parse_memory_size("off").unwrap(), 0);
+        assert_eq!(parse_memory_size("1024").unwrap(), 1024);
+        assert_eq!(parse_memory_size("1K").unwrap(), 1024);
+        assert_eq!(parse_memory_size("2M").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_memory_size("3GiB").unwrap(), 3 * 1024 * 1024 * 1024);
+    }
 }
 
 async fn healthz() -> &'static str {

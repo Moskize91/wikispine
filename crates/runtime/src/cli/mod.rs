@@ -839,4 +839,5 @@ fn print_serve_help() {
     println!("                     Env fallback: WIKISPINE_DATA_DIR");
     println!("  --bind <addr>      HTTP bind address (default: 127.0.0.1:8719)");
     println!("                     Env fallback: WIKISPINE_BIND or PORT");
+    println!("  WIKISPINE_MEMORY_RESERVE reserves and touches startup memory, e.g. 48G");
 }
