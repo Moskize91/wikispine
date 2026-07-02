@@ -15,15 +15,19 @@ use zip::ZipArchive;
 
 const RUNTIME_DATA_CONFIG_JSON: &str = include_str!("../../../../config/runtime-data.json");
 const DEFAULT_BIND: &str = "127.0.0.1:8719";
+const RUNTIME_DATA_REPO_ID: &str = "moskize/wikispine-runtime";
+const RUNTIME_DATA_REVISION: &str = "main";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
 struct RuntimeDataConfig {
+    default: String,
+    packages: Vec<RuntimeDataPackage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeDataPackage {
     version: String,
-    provider: String,
-    repo_id: String,
-    revision: String,
-    artifact: String,
     archive_md5: String,
     archive_bytes: u64,
     created_at_utc: String,
@@ -33,33 +37,40 @@ fn runtime_data_config() -> Result<RuntimeDataConfig> {
     serde_json::from_str(RUNTIME_DATA_CONFIG_JSON).map_err(RuntimeError::from)
 }
 
-fn runtime_data_url(config: &RuntimeDataConfig) -> Result<String> {
-    if config.artifact.is_empty() {
+fn default_runtime_data_package(config: &RuntimeDataConfig) -> Result<&RuntimeDataPackage> {
+    if config.default.is_empty() {
         return Err(RuntimeError::new(
-            "default runtime data artifact is not configured; update config/runtime-data.json or pass --url/--file",
+            "default runtime data version is not configured; update config/runtime-data.json or pass --url/--file",
         ));
     }
-    match config.provider.as_str() {
-        "huggingface" => {
-            if config.repo_id.is_empty() {
-                return Err(RuntimeError::new(
-                    "default runtime data Hugging Face repo is not configured; update config/runtime-data.json or pass --url/--file",
-                ));
-            }
-            let revision = if config.revision.is_empty() {
-                "main"
-            } else {
-                config.revision.as_str()
-            };
-            Ok(format!(
-                "https://huggingface.co/datasets/{}/resolve/{}/{}",
-                config.repo_id, revision, config.artifact
+    config
+        .packages
+        .iter()
+        .find(|package| package.version == config.default)
+        .ok_or_else(|| {
+            RuntimeError::new(format!(
+                "default runtime data version {} is not listed in config/runtime-data.json; pass --url/--file or update the config",
+                config.default
             ))
-        }
-        provider => Err(RuntimeError::new(format!(
-            "unsupported runtime data provider: {provider}"
-        ))),
+        })
+}
+
+fn runtime_data_artifact(version: &str) -> String {
+    format!("wikigraph-runtime-data-{version}.zip")
+}
+
+fn runtime_data_url(package: &RuntimeDataPackage) -> Result<String> {
+    if package.version.is_empty() {
+        return Err(RuntimeError::new(
+            "default runtime data version is not configured; update config/runtime-data.json or pass --url/--file",
+        ));
     }
+    Ok(format!(
+        "https://huggingface.co/datasets/{}/resolve/{}/{}",
+        RUNTIME_DATA_REPO_ID,
+        RUNTIME_DATA_REVISION,
+        runtime_data_artifact(&package.version)
+    ))
 }
 
 pub async fn run(raw_args: Vec<String>) -> Result<()> {
@@ -177,7 +188,8 @@ fn parse_init_args(args: &[String]) -> Result<InitArgs> {
         (Some(url), None) => InitSource::Url(url),
         (None, None) => {
             let config = runtime_data_config()?;
-            InitSource::Url(runtime_data_url(&config)?)
+            let package = default_runtime_data_package(&config)?;
+            InitSource::Url(runtime_data_url(package)?)
         }
     };
     Ok(InitArgs { source, data_dir })
@@ -384,7 +396,8 @@ fn require_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&
 
 fn init(args: InitArgs) -> Result<()> {
     let config = runtime_data_config()?;
-    if config.archive_md5.is_empty() {
+    let package = default_runtime_data_package(&config)?;
+    if package.archive_md5.is_empty() {
         return Err(RuntimeError::new(
             "runtime data archive MD5 is not configured",
         ));
@@ -394,10 +407,10 @@ fn init(args: InitArgs) -> Result<()> {
         InitSource::File(path) => path,
     };
     let actual_md5 = md5_file(&archive_path)?;
-    if actual_md5 != config.archive_md5 {
+    if actual_md5 != package.archive_md5 {
         return Err(RuntimeError::new(format!(
             "runtime data MD5 mismatch: expected {}, got {}",
-            config.archive_md5, actual_md5
+            package.archive_md5, actual_md5
         )));
     }
 
@@ -506,19 +519,21 @@ fn extract_zip(archive_path: &Path, out_dir: &Path) -> Result<()> {
 
 fn status(args: StatusArgs) -> Result<()> {
     let config = runtime_data_config()?;
+    let package = default_runtime_data_package(&config)?;
     println!("Runtime data directory: {}", args.data_dir.display());
-    println!("Runtime data version: {}", config.version);
-    println!("Runtime data provider: {}", config.provider);
-    println!("Runtime data repo: {}", config.repo_id);
-    println!("Runtime data revision: {}", config.revision);
-    println!("Runtime data artifact: {}", config.artifact);
-    match runtime_data_url(&config) {
+    println!("Runtime data default version: {}", config.default);
+    println!("Runtime data packages: {}", config.packages.len());
+    println!(
+        "Runtime data artifact: {}",
+        runtime_data_artifact(&package.version)
+    );
+    match runtime_data_url(package) {
         Ok(url) => println!("Default runtime data URL: {url}"),
         Err(error) => println!("Default runtime data URL: not configured ({error})"),
     }
-    println!("Expected archive MD5: {}", config.archive_md5);
-    println!("Expected archive bytes: {}", config.archive_bytes);
-    println!("Runtime data config created: {}", config.created_at_utc);
+    println!("Expected archive MD5: {}", package.archive_md5);
+    println!("Expected archive bytes: {}", package.archive_bytes);
+    println!("Runtime data package created: {}", package.created_at_utc);
     if let Some(state) = read_install_state(&args.data_dir)? {
         println!("Installed archive MD5: {}", state.archive_md5);
         println!("Installed at Unix time: {}", state.installed_at_unix);
