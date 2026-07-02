@@ -65,9 +65,6 @@ do not have to be synchronized. By default it pushes to GitHub Container Registr
 ghcr.io/<owner>/wikispine-service:<tag>
 ```
 
-The workflow can also push to Docker Hub when `push_dockerhub` is enabled and the repository has
-`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets configured.
-
 The image contains only the `wikispine` binary. It does not include runtime data and declares
 `/data/runtime` as a volume. A runtime data directory must be mounted there, or the service exits at
 startup because `manifest.json` is missing:
