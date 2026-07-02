@@ -56,6 +56,16 @@ Build the lightweight service image:
 scripts/build-service-image.sh --tag wikispine-service:0.1.0 --load
 ```
 
+The repository also provides a manual GitHub Actions workflow, `Publish Service Image`, for
+publishing the lightweight image. By default it pushes to GitHub Container Registry:
+
+```text
+ghcr.io/<owner>/wikispine-service:<tag>
+```
+
+The workflow can also push to Docker Hub when `push_dockerhub` is enabled and the repository has
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets configured.
+
 The image contains only the `wikispine` binary. Mount runtime data at container runtime:
 
 ```bash
