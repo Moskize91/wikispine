@@ -558,6 +558,8 @@ pub enum ServerEvent {
     Match { r#match: TextMatch },
     #[serde(rename = "done")]
     Done { stats: MatchStats },
+    #[serde(rename = "interrupted")]
+    Interrupted { reason: String },
 }
 
 #[derive(Debug, Serialize)]

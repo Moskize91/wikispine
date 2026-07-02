@@ -2,6 +2,7 @@ use crate::core::{MatchOptions, MatchSession, MatchStats, RuntimeDataset, Server
 use crate::{Result, RuntimeError};
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::DefaultBodyLimit;
 use axum::extract::State;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -12,10 +13,19 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+
+const MATCH_HTTP_BODY_LIMIT: usize = 32 * 1024 * 1024;
+
+#[derive(Clone)]
+struct AppState {
+    runtime: Arc<RuntimeDataset>,
+    shutdown: Arc<AtomicBool>,
+}
 
 pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
     eprintln!("loading dataset {}", dataset.display());
@@ -26,25 +36,51 @@ pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
         runtime.manifest.qid_count,
         runtime.shard_count()
     );
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let state = Arc::new(AppState { runtime, shutdown });
 
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metadata", get(metadata))
-        .route("/match", post(match_http).get(match_ws))
-        .with_state(runtime);
+        .route(
+            "/match",
+            post(match_http)
+                .get(match_ws)
+                .layer(DefaultBodyLimit::max(MATCH_HTTP_BODY_LIMIT)),
+        )
+        .with_state(state.clone());
 
     let listener = TcpListener::bind(bind).await?;
     eprintln!("listening on http://{bind}");
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
         .await
         .map_err(|source| RuntimeError::new(source.to_string()))?;
     Ok(())
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn shutdown_signal(shutdown: Arc<AtomicBool>) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = async {
+                if let Some(signal) = terminate.as_mut() {
+                    signal.recv().await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            } => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+    shutdown.store(true, Ordering::SeqCst);
 }
 
 async fn healthz() -> &'static str {
@@ -55,7 +91,8 @@ async fn readyz() -> &'static str {
     "ready\n"
 }
 
-async fn metadata(State(runtime): State<Arc<RuntimeDataset>>) -> Json<MetadataResponse> {
+async fn metadata(State(state): State<Arc<AppState>>) -> Json<MetadataResponse> {
+    let runtime = &state.runtime;
     Json(MetadataResponse {
         format: runtime.manifest.format.clone(),
         surface_normalization: runtime.manifest.surface_normalization.clone(),
@@ -66,25 +103,33 @@ async fn metadata(State(runtime): State<Arc<RuntimeDataset>>) -> Json<MetadataRe
 }
 
 async fn match_http(
-    State(runtime): State<Arc<RuntimeDataset>>,
+    State(state): State<Arc<AppState>>,
     Json(request): Json<MatchRequest>,
 ) -> Response {
     let options = request.options.unwrap_or_default();
-    ndjson_match_response(runtime, request.text, options)
+    ndjson_match_response(state, request.text, options)
 }
 
-async fn match_ws(
-    State(runtime): State<Arc<RuntimeDataset>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_match_ws(socket, runtime))
+async fn match_ws(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_match_ws(socket, state))
 }
 
-async fn handle_match_ws(socket: WebSocket, runtime: Arc<RuntimeDataset>) {
+async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
+    let runtime = &state.runtime;
     let mut session = MatchSession::new(runtime.shard_count(), MatchOptions::default());
 
     while let Some(message) = receiver.next().await {
+        if state.shutdown.load(Ordering::SeqCst) {
+            let _ = send_json(
+                &mut sender,
+                &ServerEvent::Interrupted {
+                    reason: "shutdown".to_string(),
+                },
+            )
+            .await;
+            return;
+        }
         let Ok(message) = message else {
             break;
         };
@@ -98,7 +143,7 @@ async fn handle_match_ws(socket: WebSocket, runtime: Arc<RuntimeDataset>) {
                         Some(WsServerEvent::Started)
                     }
                     Ok(WsClientEvent::Chunk { text: chunk }) => {
-                        for event in session.process_chunk(&chunk, &runtime) {
+                        for event in session.process_chunk(&chunk, runtime) {
                             if send_json(&mut sender, &event).await.is_err() {
                                 return;
                             }
@@ -155,24 +200,43 @@ async fn send_json<T: Serialize>(
     sender.send(Message::Text(payload)).await
 }
 
-fn ndjson_match_response(
-    runtime: Arc<RuntimeDataset>,
-    text: String,
-    options: MatchOptions,
-) -> Response {
+fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptions) -> Response {
     let (sender, receiver) = mpsc::channel::<std::result::Result<Bytes, RuntimeError>>(32);
     tokio::task::spawn_blocking(move || {
         let mut matches = 0usize;
-        runtime.for_each_match(&text, &options, |matched| {
+        let mut interrupted = false;
+        if state.shutdown.load(Ordering::SeqCst) {
+            let _ = send_ndjson_event(
+                &sender,
+                ServerEvent::Interrupted {
+                    reason: "shutdown".to_string(),
+                },
+            );
+            return;
+        }
+        state.runtime.for_each_match(&text, &options, |matched| {
+            if state.shutdown.load(Ordering::SeqCst) {
+                interrupted = true;
+                return false;
+            }
             matches += 1;
             send_ndjson_event(&sender, ServerEvent::Match { r#match: matched })
         });
-        let _ = send_ndjson_event(
-            &sender,
-            ServerEvent::Done {
-                stats: MatchStats { matches },
-            },
-        );
+        if interrupted || state.shutdown.load(Ordering::SeqCst) {
+            let _ = send_ndjson_event(
+                &sender,
+                ServerEvent::Interrupted {
+                    reason: "shutdown".to_string(),
+                },
+            );
+        } else {
+            let _ = send_ndjson_event(
+                &sender,
+                ServerEvent::Done {
+                    stats: MatchStats { matches },
+                },
+            );
+        }
     });
     Response::builder()
         .status(StatusCode::OK)
