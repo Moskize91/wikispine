@@ -15,9 +15,7 @@ This dataset hosts prebuilt runtime data packages for the `wikispine` CLI.
 | --- | --- |
 | `zh-en-20260702` | `wikigraph-runtime-data-zh-en-20260702.zip` |
 
-The canonical package list is maintained in the Wikispine repository:
-
-<https://github.com/Moskize91/wikispine/blob/main/config/runtime-data.json>
+The `wikispine` CLI includes the runtime package index used for default installation and checksum verification.
 
 ## Install With The CLI
 
@@ -28,7 +26,7 @@ wikispine init
 wikispine doctor
 ```
 
-By default, `wikispine init` downloads the default package recorded by the project configuration.
+By default, `wikispine init` downloads the default package recorded in the CLI's built-in package index.
 
 ## Manual Download
 

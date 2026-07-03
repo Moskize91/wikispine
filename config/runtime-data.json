@@ -1,5 +1,7 @@
 {
   "default": "zh-en-20260702",
+  "download_base_url": "https://huggingface.co/datasets/moskize/wikispine-runtime/resolve/main",
+  "artifact_template": "wikigraph-runtime-data-{version}.zip",
   "packages": [
     {
       "version": "zh-en-20260702",

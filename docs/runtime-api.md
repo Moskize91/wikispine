@@ -8,19 +8,21 @@ Runtime 是一个读取 `data/runtime/` 的服务进程。它提供两种入口�
 
 ## CLI Install
 
-`wikispine init` 安装 runtime 数据包。默认下载地址由 `config/runtime-data.json` 的 `default` 版本推导，也可以指定镜像 URL 或本地 ZIP 文件：
+`wikispine init` 安装 runtime 数据包。默认下载地址由 CLI 内置的 runtime package index 推导，也可以指定内置索引中的历史版本、镜像 URL 或本地 ZIP 文件：
 
 ```text
 wikispine init
-wikispine init --url https://example.com/wikispine-runtime-data.zip
-wikispine init --file /path/to/wikispine-runtime-data.zip
+wikispine init --version zh-en-20260702
+wikispine init --version zh-en-20260702 --url https://example.com/wikigraph-runtime-data-zh-en-20260702.zip
+wikispine init --version zh-en-20260702 --file /path/to/wikigraph-runtime-data-zh-en-20260702.zip
 ```
 
-所有安装来源都必须通过 `config/runtime-data.json` 中记录的 ZIP MD5 校验；CLI 不提供覆盖 MD5 的参数。该文件保留历史 runtime 包数组，未来 CLI 可以通过 raw GitHub 读取它来列出版本或安装指定历史版本。
+默认安装和指定 `--version` 的安装必须通过 CLI 内置的 ZIP MD5 校验；CLI 不提供覆盖 MD5 的参数。自定义 `--url` 或 `--file` 如果没有指定 `--version`，会作为外部来源安装并跳过 MD5 校验。
 
-运行命令默认读取平台数据目录下的 runtime 数据，也允许用 `--data-dir` 静默覆盖：
+`--data-dir` 是安装目标目录：CLI 会把 ZIP 解压并替换到这个目录。它不是“从文件夹复制”的来源参数。运行命令默认读取平台数据目录下的 runtime 数据，也允许用 `--data-dir` 静默覆盖：
 
 ```text
+wikispine init --data-dir /path/to/runtime
 wikispine match --data-dir /path/to/runtime
 wikispine serve --data-dir /path/to/runtime
 ```
