@@ -15,17 +15,17 @@ use zip::ZipArchive;
 
 const RUNTIME_DATA_CONFIG_JSON: &str = include_str!("../../../../config/runtime-data.json");
 const DEFAULT_BIND: &str = "127.0.0.1:8719";
-const RUNTIME_DATA_REPO_ID: &str = "moskize/wikispine-runtime";
-const RUNTIME_DATA_REVISION: &str = "main";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Deserialize)]
 struct RuntimeDataConfig {
     default: String,
+    download_base_url: String,
+    artifact_template: String,
     packages: Vec<RuntimeDataPackage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RuntimeDataPackage {
     version: String,
     archive_md5: String,
@@ -40,36 +40,55 @@ fn runtime_data_config() -> Result<RuntimeDataConfig> {
 fn default_runtime_data_package(config: &RuntimeDataConfig) -> Result<&RuntimeDataPackage> {
     if config.default.is_empty() {
         return Err(RuntimeError::new(
-            "default runtime data version is not configured; update config/runtime-data.json or pass --url/--file",
+            "default runtime data version is not configured; pass --version or pass --url/--file",
         ));
+    }
+    runtime_data_package(config, &config.default)
+}
+
+fn runtime_data_package<'a>(
+    config: &'a RuntimeDataConfig,
+    version: &str,
+) -> Result<&'a RuntimeDataPackage> {
+    if version.is_empty() {
+        return Err(RuntimeError::new("runtime data version cannot be empty"));
     }
     config
         .packages
         .iter()
-        .find(|package| package.version == config.default)
+        .find(|package| package.version == version)
         .ok_or_else(|| {
             RuntimeError::new(format!(
-                "default runtime data version {} is not listed in config/runtime-data.json; pass --url/--file or update the config",
-                config.default
+                "runtime data version {version} is not listed in the built-in package index"
             ))
         })
 }
 
-fn runtime_data_artifact(version: &str) -> String {
-    format!("wikigraph-runtime-data-{version}.zip")
-}
-
-fn runtime_data_url(package: &RuntimeDataPackage) -> Result<String> {
-    if package.version.is_empty() {
+fn runtime_data_artifact(config: &RuntimeDataConfig, version: &str) -> Result<String> {
+    if !config.artifact_template.contains("{version}") {
         return Err(RuntimeError::new(
-            "default runtime data version is not configured; update config/runtime-data.json or pass --url/--file",
+            "runtime data artifact_template must contain {version}",
         ));
     }
+    Ok(config.artifact_template.replace("{version}", version))
+}
+
+fn runtime_data_url(config: &RuntimeDataConfig, package: &RuntimeDataPackage) -> Result<String> {
+    if package.version.is_empty() {
+        return Err(RuntimeError::new(
+            "runtime data version is not configured; pass --url/--file",
+        ));
+    }
+    if config.download_base_url.is_empty() {
+        return Err(RuntimeError::new(
+            "runtime data download base URL is not configured; pass --url/--file",
+        ));
+    }
+    let artifact = runtime_data_artifact(config, &package.version)?;
     Ok(format!(
-        "https://huggingface.co/datasets/{}/resolve/{}/{}",
-        RUNTIME_DATA_REPO_ID,
-        RUNTIME_DATA_REVISION,
-        runtime_data_artifact(&package.version)
+        "{}/{}",
+        config.download_base_url.trim_end_matches('/'),
+        artifact
     ))
 }
 
@@ -104,6 +123,7 @@ pub async fn run(raw_args: Vec<String>) -> Result<()> {
 struct InitArgs {
     source: InitSource,
     data_dir: PathBuf,
+    package: Option<RuntimeDataPackage>,
 }
 
 #[derive(Debug)]
@@ -156,10 +176,15 @@ struct ServeArgs {
 fn parse_init_args(args: &[String]) -> Result<InitArgs> {
     let mut url = None::<String>;
     let mut file = None::<PathBuf>;
+    let mut version = None::<String>;
     let mut data_dir = default_data_dir()?;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--version" => {
+                index += 1;
+                version = Some(require_value(args, index, "--version")?.to_string());
+            }
             "--url" => {
                 index += 1;
                 url = Some(require_value(args, index, "--url")?.to_string());
@@ -183,16 +208,29 @@ fn parse_init_args(args: &[String]) -> Result<InitArgs> {
     if url.is_some() && file.is_some() {
         return Err(RuntimeError::new("--url and --file are mutually exclusive"));
     }
+    let config = runtime_data_config()?;
+    let package = match version {
+        Some(version) => Some(runtime_data_package(&config, &version)?.clone()),
+        None if url.is_none() && file.is_none() => {
+            Some(default_runtime_data_package(&config)?.clone())
+        }
+        None => None,
+    };
     let source = match (url, file) {
         (_, Some(path)) => InitSource::File(path),
         (Some(url), None) => InitSource::Url(url),
         (None, None) => {
-            let config = runtime_data_config()?;
-            let package = default_runtime_data_package(&config)?;
-            InitSource::Url(runtime_data_url(package)?)
+            let package = package
+                .as_ref()
+                .ok_or_else(|| RuntimeError::new("runtime data package is not configured"))?;
+            InitSource::Url(runtime_data_url(&config, package)?)
         }
     };
-    Ok(InitArgs { source, data_dir })
+    Ok(InitArgs {
+        source,
+        data_dir,
+        package,
+    })
 }
 
 fn parse_status_args(args: &[String]) -> Result<StatusArgs> {
@@ -395,24 +433,31 @@ fn require_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&
 }
 
 fn init(args: InitArgs) -> Result<()> {
-    let config = runtime_data_config()?;
-    let package = default_runtime_data_package(&config)?;
-    if package.archive_md5.is_empty() {
-        return Err(RuntimeError::new(
-            "runtime data archive MD5 is not configured",
-        ));
-    }
     let archive_path = match args.source {
         InitSource::Url(url) => download_archive(&url)?,
         InitSource::File(path) => path,
     };
-    let actual_md5 = md5_file(&archive_path)?;
-    if actual_md5 != package.archive_md5 {
-        return Err(RuntimeError::new(format!(
-            "runtime data MD5 mismatch: expected {}, got {}",
-            package.archive_md5, actual_md5
-        )));
-    }
+    let actual_md5 = match args.package.as_ref() {
+        Some(package) => {
+            if package.archive_md5.is_empty() {
+                return Err(RuntimeError::new(
+                    "runtime data archive MD5 is not configured",
+                ));
+            }
+            let actual_md5 = md5_file(&archive_path)?;
+            if actual_md5 != package.archive_md5 {
+                return Err(RuntimeError::new(format!(
+                    "runtime data MD5 mismatch: expected {}, got {}",
+                    package.archive_md5, actual_md5
+                )));
+            }
+            Some(actual_md5)
+        }
+        None => {
+            eprintln!("warning: runtime data MD5 verification skipped because no --version was provided for this source");
+            None
+        }
+    };
 
     let parent = args
         .data_dir
@@ -452,7 +497,9 @@ fn init(args: InitArgs) -> Result<()> {
     if old_dir.exists() {
         fs::remove_dir_all(old_dir)?;
     }
-    write_install_state(&args.data_dir, &actual_md5)?;
+    if let Some(actual_md5) = actual_md5 {
+        write_install_state(&args.data_dir, &actual_md5)?;
+    }
     eprintln!("installed runtime data to {}", args.data_dir.display());
     Ok(())
 }
@@ -525,9 +572,9 @@ fn status(args: StatusArgs) -> Result<()> {
     println!("Runtime data packages: {}", config.packages.len());
     println!(
         "Runtime data artifact: {}",
-        runtime_data_artifact(&package.version)
+        runtime_data_artifact(&config, &package.version)?
     );
-    match runtime_data_url(package) {
+    match runtime_data_url(&config, package) {
         Ok(url) => println!("Default runtime data URL: {url}"),
         Err(error) => println!("Default runtime data URL: not configured ({error})"),
     }
@@ -797,8 +844,9 @@ fn print_init_help() {
     println!("Usage: wikispine init [options]");
     println!();
     println!("Download or install the runtime data package. All sources are verified");
-    println!("against the configured archive MD5 before replacing the current data.");
+    println!("against the built-in archive MD5 when a known version is selected.");
     println!();
+    println!("  --version <v>      Runtime data version (default: configured default)");
     println!("  --url <url>        Download runtime data archive from URL");
     println!("  --file <path>      Install runtime data archive from local ZIP");
     println!("  --data-dir <dir>   Install directory (default: platform data dir)");

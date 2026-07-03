@@ -188,6 +188,14 @@ if not replaced:
 
 data = {
     "default": package["version"],
+    "download_base_url": data.get(
+        "download_base_url",
+        "https://huggingface.co/datasets/$repo_id/resolve/$revision",
+    ),
+    "artifact_template": data.get(
+        "artifact_template",
+        "wikigraph-runtime-data-{version}.zip",
+    ),
     "packages": packages,
 }
 path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

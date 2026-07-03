@@ -89,18 +89,23 @@ Install the default runtime data package:
 wikispine init
 ```
 
-Before the first public runtime package is published, default installation may be unavailable. In
-that case, use `--url` or `--file` with the configured runtime data archive.
+Install a specific runtime data version:
+
+```bash
+wikispine init --version zh-en-20260702
+```
 
 Install from a custom mirror URL or local archive:
 
 ```bash
-wikispine init --url https://example.com/wikispine-runtime-data.zip
-wikispine init --file /path/to/wikispine-runtime-data.zip
+wikispine init --version zh-en-20260702 --url https://example.com/wikigraph-runtime-data-zh-en-20260702.zip
+wikispine init --version zh-en-20260702 --file /path/to/wikigraph-runtime-data-zh-en-20260702.zip
 ```
 
-All install sources are checked against the configured runtime data MD5. Use `--data-dir` when you
-want to install or read a non-default runtime dataset:
+When `--version` is present, the archive is checked against the built-in package checksum. Custom
+`--url` or `--file` sources without `--version` are installed without checksum verification.
+
+Use `--data-dir` to choose the directory where the archive is extracted and installed:
 
 ```bash
 wikispine init --data-dir /path/to/runtime
