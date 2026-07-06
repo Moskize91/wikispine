@@ -164,6 +164,8 @@ def open_match_response(
 
 def scan_file(
     path: pathlib.Path,
+    file_index: int,
+    file_count: int,
     endpoint: str,
     scan_max_candidates: int,
     timeout: float,
@@ -177,10 +179,22 @@ def scan_file(
         {"include_disambiguation": True, "max_candidates_per_surface": scan_max_candidates},
         timeout,
     )
-    file_stats = {"matches": 0, "response_bytes": 0, "malformed": 0}
+    file_stats = {"ndjson_lines": 0, "matches": 0, "response_bytes": 0, "malformed": 0}
     with response:
         for line in response:
+            file_stats["ndjson_lines"] += 1
             file_stats["response_bytes"] += len(line)
+            if file_stats["ndjson_lines"] % 1000 == 0:
+                print(
+                    (
+                        f"[{file_index}/{file_count}] {path.name}: "
+                        f"ndjson_lines={file_stats['ndjson_lines']} "
+                        f"matches={file_stats['matches']} "
+                        f"response_bytes={file_stats['response_bytes']}"
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
@@ -257,14 +271,21 @@ def main() -> int:
     total_matches = 0
     total_response_bytes = 0
 
-    for path in files:
+    file_count = len(files)
+    for file_index, path in enumerate(files, 1):
         text = path.read_text(encoding="utf-8")
         words = word_count(text, args.language)
         total_words += words
         total_chars += len(text)
-        print(f"scanning {path} chars={len(text)} words={words}", file=sys.stderr)
+        print(
+            f"[{file_index}/{file_count}] scanning {path} chars={len(text)} words={words}",
+            file=sys.stderr,
+            flush=True,
+        )
         file_stats = scan_file(
             path,
+            file_index,
+            file_count,
             args.endpoint,
             args.scan_max_candidates,
             args.timeout,
