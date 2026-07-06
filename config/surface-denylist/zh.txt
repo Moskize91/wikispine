@@ -1,0 +1,4 @@
+# normalized Chinese surface keys
+的
+了
+在

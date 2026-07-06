@@ -1,6 +1,7 @@
 use crate::{Result, RuntimeError};
 use memmap2::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::File;
 use std::num::NonZeroU32;
 use std::path::Path;
@@ -8,6 +9,8 @@ use wikispine_core::normalize::{NormalizedChar, SurfaceNormalizer, SURFACE_NORMA
 
 const ROOT_STATE_ID: u32 = 0;
 const QID_FLAG_DISAMBIGUATION: u32 = 1;
+const BUILTIN_SURFACE_DENYLIST_JSON: &str =
+    include_str!("../../../../config/surface-denylist/runtime-zh-en-20260702.surface-ids.json");
 
 #[derive(Debug)]
 pub struct RuntimeDataset {
@@ -17,6 +20,7 @@ pub struct RuntimeDataset {
     surface_qid_values: MmapTable,
     qid_numbers: MmapTable,
     qid_flags: MmapTable,
+    denylisted_surface_ids: HashSet<u32>,
 }
 
 impl RuntimeDataset {
@@ -38,6 +42,7 @@ impl RuntimeDataset {
                 manifest.surface_normalization
             )));
         }
+        let denylisted_surface_ids = load_builtin_surface_denylist(&manifest)?;
 
         let mut shards = Vec::with_capacity(manifest.automaton_shards.len());
         for shard in &manifest.automaton_shards {
@@ -65,6 +70,7 @@ impl RuntimeDataset {
                 4,
                 manifest.qid_count,
             )?,
+            denylisted_surface_ids,
             manifest,
             shards,
         })
@@ -87,6 +93,10 @@ impl RuntimeDataset {
 
     pub fn shard_count(&self) -> usize {
         self.shards.len()
+    }
+
+    fn is_surface_denied(&self, surface_id: u32) -> bool {
+        self.denylisted_surface_ids.contains(&surface_id)
     }
 
     fn qids_for_surface(&self, surface_id: u32, options: &MatchOptions) -> Vec<QidCandidate> {
@@ -321,6 +331,9 @@ impl AutomatonShard {
         let normalized_start = normalized_end - length;
         let start = *context.normalized_original_starts.get(normalized_start)?;
         let end = *context.normalized_original_ends.get(normalized_end)?;
+        if context.dataset.is_surface_denied(output.surface_id) {
+            return None;
+        }
         let qids = context
             .dataset
             .qids_for_surface(output.surface_id, context.options);
@@ -493,6 +506,50 @@ impl<'a> Iterator for NormalizedCharEndIterator<'a> {
     }
 }
 
+fn load_builtin_surface_denylist(manifest: &Manifest) -> Result<HashSet<u32>> {
+    let denylist = serde_json::from_str::<SurfaceDenylist>(BUILTIN_SURFACE_DENYLIST_JSON).map_err(
+        |source| RuntimeError::new(format!("invalid built-in surface denylist JSON: {source}")),
+    )?;
+    if denylist.surface_normalization != manifest.surface_normalization {
+        return Err(RuntimeError::new(format!(
+            "built-in surface denylist normalization {} does not match runtime dataset {}",
+            denylist.surface_normalization, manifest.surface_normalization
+        )));
+    }
+    if denylist.surface_count != manifest.surface_count {
+        return Err(RuntimeError::new(format!(
+            "built-in surface denylist for {} has surface_count {}, but runtime dataset has {}",
+            denylist.runtime_version, denylist.surface_count, manifest.surface_count
+        )));
+    }
+    if denylist.qid_count != manifest.qid_count {
+        return Err(RuntimeError::new(format!(
+            "built-in surface denylist for {} has qid_count {}, but runtime dataset has {}",
+            denylist.runtime_version, denylist.qid_count, manifest.qid_count
+        )));
+    }
+
+    let mut surface_ids = HashSet::with_capacity(denylist.surface_ids.len());
+    for surface_id in denylist.surface_ids {
+        if surface_id as usize >= manifest.surface_count {
+            return Err(RuntimeError::new(format!(
+                "built-in surface denylist contains out-of-range surface_id {surface_id}"
+            )));
+        }
+        surface_ids.insert(surface_id);
+    }
+    Ok(surface_ids)
+}
+
+#[derive(Debug, Deserialize)]
+struct SurfaceDenylist {
+    runtime_version: String,
+    surface_normalization: String,
+    surface_count: usize,
+    qid_count: usize,
+    surface_ids: Vec<u32>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Manifest {
     pub format: String,
@@ -581,4 +638,48 @@ pub struct QidCandidate {
     pub qid: String,
     pub qid_number: u32,
     pub disambiguation: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest_for_builtin_denylist() -> Manifest {
+        Manifest {
+            format: "wikispine-runtime-v1".to_string(),
+            surface_normalization: SURFACE_NORMALIZATION.to_string(),
+            endian: "little".to_string(),
+            mode: "charwise".to_string(),
+            surface_count: 96_895_518,
+            surface_qid_value_count: 0,
+            qid_count: 82_797_073,
+            automaton_shard_count: 1,
+            automaton_shards: Vec::new(),
+            files: RuntimeFiles {
+                surface_qid_index: String::new(),
+                surface_qid_values: String::new(),
+                qid_numbers: String::new(),
+                qid_flags: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn builtin_surface_denylist_loads_for_current_runtime_package() {
+        let manifest = manifest_for_builtin_denylist();
+        let surface_ids = load_builtin_surface_denylist(&manifest).unwrap();
+
+        assert!(surface_ids.contains(&4_321_409));
+        assert!(surface_ids.contains(&29_805_016));
+        assert!(surface_ids.contains(&94_665_863));
+        assert_eq!(surface_ids.len(), 6);
+    }
+
+    #[test]
+    fn builtin_surface_denylist_rejects_mismatched_runtime_package() {
+        let mut manifest = manifest_for_builtin_denylist();
+        manifest.surface_count -= 1;
+
+        assert!(load_builtin_surface_denylist(&manifest).is_err());
+    }
 }

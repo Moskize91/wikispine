@@ -1,0 +1,30 @@
+{
+  "runtime_version": "zh-en-20260702",
+  "surface_normalization": "wikispine-surface-normalization",
+  "surface_count": 96895518,
+  "qid_count": 82797073,
+  "source_files": {
+    "denylist": [
+      "config/surface-denylist/en.txt",
+      "config/surface-denylist/zh.txt"
+    ],
+    "surface_qids": "data/preprocess/surface_qids.tsv",
+    "runtime_manifest": "data/runtime/manifest.json"
+  },
+  "surface_ids": [
+    4321409,
+    29805016,
+    42293381,
+    90837725,
+    92021533,
+    94665863
+  ],
+  "surface_text_to_id": {
+    "a": 4321409,
+    "e": 29805016,
+    "i": 42293381,
+    "的": 94665863,
+    "了": 90837725,
+    "在": 92021533
+  }
+}

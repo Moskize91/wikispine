@@ -1,0 +1,4 @@
+# normalized English surface keys
+a
+e
+i
