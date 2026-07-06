@@ -1,7 +1,7 @@
 # Surface Denylist
 
-This directory contains the short-term runtime surface denylist and the sample
-analysis artifacts used to review it.
+This directory contains the short-term runtime surface denylist and the
+publishable analysis artifacts used to review it.
 
 ## Layout
 
@@ -13,14 +13,14 @@ analysis artifacts used to review it.
   `surface_id` values from that package so the runtime can suppress those
   matches without rebuilding the automaton. Delete this generated bridge when
   denylist filtering moves into the builder pipeline.
-- `analysis/samples/out/` contains generated top-surface reports from local
-  sample runs.
+- `analysis/full/` contains generated top-surface reports for the reviewed
+  full-book runs. These reports are expected to be committed after checking that
+  they do not contain raw source text.
 
-The sample analysis reports are committed so changes to the analysis script have
-a concrete, inspectable output shape. Raw book text is not committed because it
-may be copyrighted; generate it under `/tmp` or another private local path.
-Full-book analysis output can be generated outside the repo first and copied
-here only after review.
+Raw book text is not committed because it may be copyrighted; keep it under the
+ignored repo-local `tmp/` directory or another private local path. Analysis
+outputs can be committed after they are checked to contain only aggregate
+surface statistics and QID metadata.
 
 Regenerate the bridge with:
 
@@ -31,18 +31,18 @@ scripts/generate-surface-denylist-ids.py \
   --runtime data/runtime
 ```
 
-Run the sample analysis with:
+Run the full analysis with repo-local ignored raw text:
 
 ```bash
 scripts/analyze-surface-frequency.py \
-  --raw-dir /tmp/wikispine-denylist-analysis/raw/en \
+  --raw-dir tmp/raw/en \
   --language en \
-  --top 20 \
-  --out config/surface-denylist/analysis/samples/out/en-top-surfaces.json
+  --top 5000 \
+  --out config/surface-denylist/analysis/full/en-top-surfaces.json
 
 scripts/analyze-surface-frequency.py \
-  --raw-dir /tmp/wikispine-denylist-analysis/raw/zh-cn \
+  --raw-dir tmp/raw/zh-cn \
   --language zh-cn \
-  --top 20 \
-  --out config/surface-denylist/analysis/samples/out/zh-cn-top-surfaces.json
+  --top 5000 \
+  --out config/surface-denylist/analysis/full/zh-cn-top-surfaces.json
 ```
