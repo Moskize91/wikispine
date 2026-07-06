@@ -9,8 +9,9 @@ use wikispine_core::normalize::{NormalizedChar, SurfaceNormalizer, SURFACE_NORMA
 
 const ROOT_STATE_ID: u32 = 0;
 const QID_FLAG_DISAMBIGUATION: u32 = 1;
-const BUILTIN_SURFACE_DENYLIST_JSON: &str =
-    include_str!("../../../../config/surface-denylist/runtime-zh-en-20260702.surface-ids.json");
+const BUILTIN_SURFACE_DENYLIST_JSON: &str = include_str!(
+    "../../../../config/surface-denylist/generated/runtime-zh-en-20260702.surface-ids.json"
+);
 
 #[derive(Debug)]
 pub struct RuntimeDataset {

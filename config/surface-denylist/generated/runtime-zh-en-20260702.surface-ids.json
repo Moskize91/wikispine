@@ -5,8 +5,8 @@
   "qid_count": 82797073,
   "source_files": {
     "denylist": [
-      "config/surface-denylist/en.txt",
-      "config/surface-denylist/zh.txt"
+      "config/surface-denylist/reviewed/en.txt",
+      "config/surface-denylist/reviewed/zh.txt"
     ],
     "surface_qids": "data/preprocess/surface_qids.tsv",
     "runtime_manifest": "data/runtime/manifest.json"

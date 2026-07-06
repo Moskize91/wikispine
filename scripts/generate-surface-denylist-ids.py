@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the temporary runtime surface_id denylist bridge.
 
-The reviewed source of truth is config/surface-denylist/{en,zh}.txt. This
+The reviewed source of truth is config/surface-denylist/reviewed/{en,zh}.txt. This
 script maps those normalized surface keys to surface_id values using
 data/preprocess/surface_qids.tsv, then binds the result to a runtime manifest.
 """
@@ -15,7 +15,9 @@ import sys
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_DENYLIST_DIR = REPO_ROOT / "config" / "surface-denylist"
+DEFAULT_SURFACE_DENYLIST_DIR = REPO_ROOT / "config" / "surface-denylist"
+DEFAULT_DENYLIST_DIR = DEFAULT_SURFACE_DENYLIST_DIR / "reviewed"
+DEFAULT_GENERATED_DIR = DEFAULT_SURFACE_DENYLIST_DIR / "generated"
 DEFAULT_SURFACE_QIDS = REPO_ROOT / "data" / "preprocess" / "surface_qids.tsv"
 DEFAULT_RUNTIME_DIR = REPO_ROOT / "data" / "runtime"
 
@@ -52,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         type=pathlib.Path,
         help=(
             "Output JSON path. Defaults to "
-            "config/surface-denylist/runtime-<version>.surface-ids.json."
+            "config/surface-denylist/generated/runtime-<version>.surface-ids.json."
         ),
     )
     return parser.parse_args()
@@ -161,7 +163,7 @@ def map_surfaces_to_ids(
 def main() -> int:
     args = parse_args()
     out_path = args.out or (
-        DEFAULT_DENYLIST_DIR / f"runtime-{args.version}.surface-ids.json"
+        DEFAULT_GENERATED_DIR / f"runtime-{args.version}.surface-ids.json"
     )
     reviewed_surfaces = read_reviewed_surfaces(args.denylist_dir)
     surface_ids_by_text = map_surfaces_to_ids(args.surface_qids, reviewed_surfaces)
