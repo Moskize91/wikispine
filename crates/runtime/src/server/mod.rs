@@ -155,6 +155,11 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
                         })
                     }
                     Ok(WsClientEvent::End) => {
+                        for event in session.finish() {
+                            if send_json(&mut sender, &event).await.is_err() {
+                                return;
+                            }
+                        }
                         if send_json(
                             &mut sender,
                             &ServerEvent::Done {

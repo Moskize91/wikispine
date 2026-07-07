@@ -667,6 +667,9 @@ fn match_stdin(args: MatchArgs) -> Result<()> {
             }
         }
     }
+    for event in session.finish() {
+        write_event(&mut writer, &event)?;
+    }
     write_event(
         &mut writer,
         &ServerEvent::Done {
