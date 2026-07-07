@@ -8,6 +8,7 @@ use wikispine_core::normalize::{NormalizedChar, SurfaceNormalizer, SURFACE_NORMA
 
 const ROOT_STATE_ID: u32 = 0;
 const QID_FLAG_DISAMBIGUATION: u32 = 1;
+const LEGACY_RUNTIME_MAX_SURFACE_LEN: usize = 388;
 
 #[derive(Debug)]
 pub struct RuntimeDataset {
@@ -636,7 +637,9 @@ pub struct Manifest {
     mode: String,
     pub surface_count: usize,
     surface_qid_value_count: usize,
+    #[serde(default = "legacy_runtime_max_surface_len")]
     pub max_surface_char_len: usize,
+    #[serde(default = "legacy_runtime_max_surface_len")]
     pub max_surface_utf16_len: usize,
     pub qid_count: usize,
     pub automaton_shard_count: usize,
@@ -686,6 +689,10 @@ impl Default for MatchOptions {
 
 fn default_include_disambiguation() -> bool {
     true
+}
+
+fn legacy_runtime_max_surface_len() -> usize {
+    LEGACY_RUNTIME_MAX_SURFACE_LEN
 }
 
 #[derive(Debug, Serialize)]
@@ -759,6 +766,39 @@ mod tests {
         pending.push(pending_match(5));
         resolve_pending_matches(&mut pending, None, &mut matches);
         assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn manifest_uses_legacy_max_surface_len_when_fields_are_missing() {
+        let manifest = serde_json::from_str::<Manifest>(
+            r#"{
+                "format": "wikispine-runtime-v1",
+                "surface_normalization": "wikispine-surface-normalization",
+                "endian": "little",
+                "mode": "charwise",
+                "surface_count": 1,
+                "surface_qid_value_count": 1,
+                "qid_count": 1,
+                "automaton_shard_count": 0,
+                "automaton_shards": [],
+                "files": {
+                    "surface_qid_index": "surfaces/surface_qid_index.bin",
+                    "surface_qid_values": "surfaces/surface_qid_values.bin",
+                    "qid_numbers": "qids/qid_numbers.bin",
+                    "qid_flags": "qids/qid_flags.bin"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            manifest.max_surface_char_len,
+            LEGACY_RUNTIME_MAX_SURFACE_LEN
+        );
+        assert_eq!(
+            manifest.max_surface_utf16_len,
+            LEGACY_RUNTIME_MAX_SURFACE_LEN
+        );
     }
 
     fn char_maps(value: &str) -> (Vec<Option<char>>, Vec<Option<char>>) {
