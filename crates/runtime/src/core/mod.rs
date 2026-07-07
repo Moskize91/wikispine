@@ -198,7 +198,6 @@ impl MatchSession {
         let mut chunk_pending_matches = Vec::<PendingMatch>::new();
         let mut context = ShardScanContext {
             normalized_base_offset: self.normalized_offset_utf16,
-            original_base_offset: self.offset_utf16,
             normalized_original_starts: &mut self.normalized_original_starts,
             normalized_original_ends: &mut self.normalized_original_ends,
             normalized_chars_start: &mut self.normalized_chars_start,
@@ -257,7 +256,6 @@ impl MatchSession {
 
 struct ShardScanContext<'a> {
     normalized_base_offset: usize,
-    original_base_offset: usize,
     normalized_original_starts: &'a mut Vec<usize>,
     normalized_original_ends: &'a mut Vec<usize>,
     normalized_chars_start: &'a mut Vec<Option<char>>,
@@ -315,8 +313,8 @@ impl AutomatonShard {
             ensure_original_map_len(context.normalized_original_ends, normalized_end);
             ensure_char_map_len(context.normalized_chars_start, normalized_end);
             ensure_char_map_len(context.normalized_chars_end, normalized_end);
-            let original_start = context.original_base_offset + item.original_start_utf16;
-            let original_end = context.original_base_offset + item.original_end_utf16;
+            let original_start = item.original_start_utf16;
+            let original_end = item.original_end_utf16;
             context.normalized_original_starts[normalized_start] = original_start;
             context.normalized_original_ends[normalized_end] = original_end;
             context.normalized_chars_start[normalized_start] = Some(item.ch);

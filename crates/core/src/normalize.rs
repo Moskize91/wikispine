@@ -57,21 +57,38 @@ pub fn normalize_chars(value: &str) -> Vec<NormalizedChar> {
 pub struct SurfaceNormalizer {
     emitted_any: bool,
     pending_space: Option<NormalizedChar>,
+    source_offset_utf16: usize,
+    pending_cr: Option<LayoutAtom>,
+    pending_horizontal_space: Vec<LayoutAtom>,
+    pending_line_break: Option<LayoutAtom>,
+    at_line_start: bool,
+    dehyphen_pending: Vec<LayoutAtom>,
+    dehyphen_last_emitted_latin: bool,
 }
 
 impl SurfaceNormalizer {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            at_line_start: true,
+            ..Self::default()
+        }
     }
 
     pub fn reset(&mut self) {
         self.emitted_any = false;
         self.pending_space = None;
+        self.source_offset_utf16 = 0;
+        self.pending_cr = None;
+        self.pending_horizontal_space.clear();
+        self.pending_line_break = None;
+        self.at_line_start = true;
+        self.dehyphen_pending.clear();
+        self.dehyphen_last_emitted_latin = false;
     }
 
     pub fn normalize_chunk(&mut self, value: &str) -> Vec<NormalizedChar> {
         let mut result = Vec::new();
-        for item in normalize_chars_raw(value) {
+        for item in self.normalize_chars_raw(value) {
             if item.ch == ' ' {
                 if self.emitted_any {
                     self.pending_space = Some(match self.pending_space.take() {
@@ -92,14 +109,162 @@ impl SurfaceNormalizer {
 
     pub fn finish(&mut self) {
         self.pending_space = None;
+        self.pending_cr = None;
+        self.pending_horizontal_space.clear();
+        self.pending_line_break = None;
+        self.dehyphen_pending.clear();
+    }
+
+    fn normalize_chars_raw(&mut self, value: &str) -> Vec<NormAtom> {
+        let atoms = self.source_atoms(value);
+        let atoms = filter_deleted(atoms);
+        let atoms = self.normalize_line_layout(atoms);
+        let atoms = self.dehyphenate(atoms);
+        normalize_layout_atoms(atoms)
+    }
+
+    fn source_atoms(&mut self, value: &str) -> Vec<LayoutAtom> {
+        let base_offset = self.source_offset_utf16;
+        self.source_offset_utf16 += value.encode_utf16().count();
+
+        let mut result = Vec::new();
+        let mut chars = value.chars().peekable();
+        let mut original_start_utf16 = base_offset;
+
+        if let Some(pending_cr) = self.pending_cr.take() {
+            if chars.peek() == Some(&'\n') {
+                chars.next();
+                let original_end_utf16 = base_offset + '\n'.len_utf16();
+                result.push(LayoutAtom {
+                    kind: AtomKind::Char('\n'),
+                    original_start_utf16: pending_cr.original_start_utf16,
+                    original_end_utf16,
+                });
+                original_start_utf16 = original_end_utf16;
+            } else {
+                result.push(pending_cr);
+            }
+        }
+
+        while let Some(original) = chars.next() {
+            let mut original_end_utf16 = original_start_utf16 + original.len_utf16();
+            let mut ch = original;
+            if original == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+                original_end_utf16 += '\n'.len_utf16();
+                ch = '\n';
+            } else if original == '\r' && chars.peek().is_none() {
+                self.pending_cr = Some(LayoutAtom {
+                    kind: AtomKind::Char('\r'),
+                    original_start_utf16,
+                    original_end_utf16,
+                });
+                original_start_utf16 = original_end_utf16;
+                continue;
+            }
+            result.push(LayoutAtom {
+                kind: AtomKind::Char(ch),
+                original_start_utf16,
+                original_end_utf16,
+            });
+            original_start_utf16 = original_end_utf16;
+        }
+        result
+    }
+
+    fn normalize_line_layout(&mut self, atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
+        let mut result = Vec::new();
+
+        for atom in atoms {
+            match atom.kind {
+                AtomKind::Char(ch) if is_line_break_char(ch) => {
+                    self.pending_horizontal_space.clear();
+                    let line_break = LayoutAtom {
+                        kind: AtomKind::LineBreak,
+                        original_start_utf16: atom.original_start_utf16,
+                        original_end_utf16: atom.original_end_utf16,
+                    };
+                    self.pending_line_break = Some(match self.pending_line_break.take() {
+                        Some(previous) => {
+                            merge_layout_atoms(AtomKind::ParagraphBreak, &[previous, line_break])
+                                .unwrap()
+                        }
+                        None => line_break,
+                    });
+                    self.at_line_start = true;
+                }
+                AtomKind::Char(ch) if is_horizontal_space_like(ch) => {
+                    if !self.at_line_start {
+                        self.pending_horizontal_space.push(atom);
+                    }
+                }
+                _ => {
+                    if let Some(line_break) = self.pending_line_break.take() {
+                        result.push(line_break);
+                    }
+                    if !self.pending_horizontal_space.is_empty() {
+                        result.push(
+                            merge_layout_atoms(AtomKind::Char(' '), &self.pending_horizontal_space)
+                                .unwrap(),
+                        );
+                        self.pending_horizontal_space.clear();
+                    }
+                    result.push(atom);
+                    self.at_line_start = false;
+                }
+            }
+        }
+
+        result
+    }
+
+    fn dehyphenate(&mut self, atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
+        let mut result = Vec::new();
+        for atom in atoms {
+            self.push_dehyphen_atom(atom, &mut result);
+        }
+        result
+    }
+
+    fn push_dehyphen_atom(&mut self, atom: LayoutAtom, result: &mut Vec<LayoutAtom>) {
+        if self.dehyphen_pending.is_empty() {
+            if self.dehyphen_last_emitted_latin && atom.kind.is_hyphen() {
+                self.dehyphen_pending.push(atom);
+            } else {
+                self.emit_dehyphen_atom(atom, result);
+            }
+            return;
+        }
+
+        self.dehyphen_pending.push(atom);
+        match self.dehyphen_pending.as_slice() {
+            [hyphen, line_break]
+                if hyphen.kind.is_hyphen() && line_break.kind == AtomKind::LineBreak => {}
+            [hyphen, line_break, next]
+                if hyphen.kind.is_hyphen()
+                    && line_break.kind == AtomKind::LineBreak
+                    && next.kind.is_latin_letter() =>
+            {
+                let next = next.clone();
+                self.dehyphen_pending.clear();
+                self.emit_dehyphen_atom(next, result);
+            }
+            _ => {
+                let pending = std::mem::take(&mut self.dehyphen_pending);
+                for atom in pending {
+                    self.emit_dehyphen_atom(atom, result);
+                }
+            }
+        }
+    }
+
+    fn emit_dehyphen_atom(&mut self, atom: LayoutAtom, result: &mut Vec<LayoutAtom>) {
+        self.dehyphen_last_emitted_latin = atom.kind.is_latin_letter();
+        result.push(atom);
     }
 }
 
-fn normalize_chars_raw(value: &str) -> Vec<NormAtom> {
-    let atoms = source_atoms(value);
-    let atoms = filter_deleted(atoms);
-    let atoms = normalize_line_layout(atoms);
-    let atoms = dehyphenate(atoms);
+fn normalize_layout_atoms(atoms: Vec<LayoutAtom>) -> Vec<NormAtom> {
     let atoms = fold_separators(atoms);
     let atoms = nfkc_atoms(atoms);
     let atoms = case_fold_atoms(atoms);
@@ -110,102 +275,11 @@ fn normalize_chars_raw(value: &str) -> Vec<NormAtom> {
     fold_normalized_separators(atoms)
 }
 
-fn source_atoms(value: &str) -> Vec<LayoutAtom> {
-    let mut result = Vec::new();
-    let mut chars = value.chars().peekable();
-    let mut original_start_utf16 = 0usize;
-    while let Some(original) = chars.next() {
-        let mut original_end_utf16 = original_start_utf16 + original.len_utf16();
-        let mut ch = original;
-        if original == '\r' && chars.peek() == Some(&'\n') {
-            chars.next();
-            original_end_utf16 += '\n'.len_utf16();
-            ch = '\n';
-        }
-        result.push(LayoutAtom {
-            kind: AtomKind::Char(ch),
-            original_start_utf16,
-            original_end_utf16,
-        });
-        original_start_utf16 = original_end_utf16;
-    }
-    result
-}
-
 fn filter_deleted(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
     atoms
         .into_iter()
         .filter(|atom| !matches!(atom.kind, AtomKind::Char(ch) if is_deleted(ch)))
         .collect()
-}
-
-fn normalize_line_layout(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
-    let mut result = Vec::new();
-    let mut pending_horizontal_space = Vec::<LayoutAtom>::new();
-    let mut pending_line_break: Option<LayoutAtom> = None;
-    let mut at_line_start = true;
-
-    for atom in atoms {
-        match atom.kind {
-            AtomKind::Char(ch) if is_line_break_char(ch) => {
-                pending_horizontal_space.clear();
-                let line_break = LayoutAtom {
-                    kind: AtomKind::LineBreak,
-                    original_start_utf16: atom.original_start_utf16,
-                    original_end_utf16: atom.original_end_utf16,
-                };
-                pending_line_break = Some(match pending_line_break.take() {
-                    Some(previous) => {
-                        merge_layout_atoms(AtomKind::ParagraphBreak, &[previous, line_break])
-                            .unwrap()
-                    }
-                    None => line_break,
-                });
-                at_line_start = true;
-            }
-            AtomKind::Char(ch) if is_horizontal_space_like(ch) => {
-                if !at_line_start {
-                    pending_horizontal_space.push(atom);
-                }
-            }
-            _ => {
-                if let Some(line_break) = pending_line_break.take() {
-                    result.push(line_break);
-                }
-                if !pending_horizontal_space.is_empty() {
-                    result.push(
-                        merge_layout_atoms(AtomKind::Char(' '), &pending_horizontal_space).unwrap(),
-                    );
-                    pending_horizontal_space.clear();
-                }
-                result.push(atom);
-                at_line_start = false;
-            }
-        }
-    }
-
-    result
-}
-
-fn dehyphenate(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
-    let mut result = Vec::<LayoutAtom>::with_capacity(atoms.len());
-    let mut index = 0usize;
-    while index < atoms.len() {
-        if index + 2 < atoms.len()
-            && result
-                .last()
-                .is_some_and(|atom| atom.kind.is_latin_letter())
-            && atoms[index].kind.is_hyphen()
-            && atoms[index + 1].kind == AtomKind::LineBreak
-            && atoms[index + 2].kind.is_latin_letter()
-        {
-            index += 2;
-            continue;
-        }
-        result.push(atoms[index].clone());
-        index += 1;
-    }
-    result
 }
 
 fn fold_separators(atoms: Vec<LayoutAtom>) -> Vec<NormAtom> {
@@ -597,5 +671,81 @@ mod tests {
                 .collect::<String>(),
             "alan turing"
         );
+    }
+
+    #[test]
+    fn preserves_chunk_leading_space_after_previous_word() {
+        let mut normalizer = SurfaceNormalizer::new();
+        let first = normalizer.normalize_chunk("Apple");
+        let second = normalizer.normalize_chunk("  Pencil");
+        let chars = first.into_iter().chain(second).collect::<Vec<_>>();
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "apple pencil"
+        );
+        let space = &chars[5];
+        assert_eq!(space.ch, ' ');
+        assert_eq!(space.original_start_utf16, 5);
+        assert_eq!(space.original_end_utf16, 7);
+    }
+
+    #[test]
+    fn preserves_chunk_trailing_space_until_next_word() {
+        let mut normalizer = SurfaceNormalizer::new();
+        let first = normalizer.normalize_chunk("Apple  ");
+        let second = normalizer.normalize_chunk("Pencil");
+        let chars = first.into_iter().chain(second).collect::<Vec<_>>();
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "apple pencil"
+        );
+        let space = &chars[5];
+        assert_eq!(space.ch, ' ');
+        assert_eq!(space.original_start_utf16, 5);
+        assert_eq!(space.original_end_utf16, 7);
+    }
+
+    #[test]
+    fn preserves_chunk_trailing_line_break_until_next_word() {
+        let mut normalizer = SurfaceNormalizer::new();
+        let first = normalizer.normalize_chunk("Apple\n");
+        let second = normalizer.normalize_chunk("Pencil");
+        let chars = first.into_iter().chain(second).collect::<Vec<_>>();
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "apple pencil"
+        );
+        let space = &chars[5];
+        assert_eq!(space.ch, ' ');
+        assert_eq!(space.original_start_utf16, 5);
+        assert_eq!(space.original_end_utf16, 6);
+    }
+
+    #[test]
+    fn dehyphenates_across_chunks() {
+        let mut normalizer = SurfaceNormalizer::new();
+        let first = normalizer.normalize_chunk("Pen-");
+        let second = normalizer.normalize_chunk("\ncil");
+        let chars = first.into_iter().chain(second).collect::<Vec<_>>();
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "pencil"
+        );
+        assert_eq!(chars[3].ch, 'c');
+        assert_eq!(chars[3].original_start_utf16, 5);
+    }
+
+    #[test]
+    fn treats_split_crlf_as_one_line_break_across_chunks() {
+        let mut normalizer = SurfaceNormalizer::new();
+        let first = normalizer.normalize_chunk("Pen-\r");
+        let second = normalizer.normalize_chunk("\ncil");
+        let chars = first.into_iter().chain(second).collect::<Vec<_>>();
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "pencil"
+        );
+        assert_eq!(chars[3].ch, 'c');
+        assert_eq!(chars[3].original_start_utf16, 6);
     }
 }

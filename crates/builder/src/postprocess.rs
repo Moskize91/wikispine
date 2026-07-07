@@ -176,10 +176,27 @@ pub fn annotate_runtime_manifest(args: AnnotateManifestArgs) -> Result<()> {
         Value::from(stats.max_surface_utf16_len as u64),
     );
 
-    let mut file = BufWriter::new(File::create(&manifest_path)?);
-    serde_json::to_writer_pretty(&mut file, &manifest)?;
-    file.write_all(b"\n")?;
-    file.flush()?;
+    let manifest_file_name = manifest_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            err(format!(
+                "invalid manifest path: {}",
+                manifest_path.display()
+            ))
+        })?;
+    let tmp_manifest_path =
+        manifest_path.with_file_name(format!(".{manifest_file_name}.annotate.tmp"));
+    if tmp_manifest_path.exists() {
+        fs::remove_file(&tmp_manifest_path)?;
+    }
+    {
+        let mut file = BufWriter::new(File::create(&tmp_manifest_path)?);
+        serde_json::to_writer_pretty(&mut file, &manifest)?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+    }
+    fs::rename(&tmp_manifest_path, &manifest_path)?;
     println!(
         "wrote {} max_surface_char_len={} max_surface_utf16_len={}",
         manifest_path.display(),
