@@ -13,6 +13,20 @@ pub struct NormalizedChar {
 
 type NormAtom = NormalizedChar;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AtomKind {
+    Char(char),
+    LineBreak,
+    ParagraphBreak,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LayoutAtom {
+    kind: AtomKind,
+    original_start_utf16: usize,
+    original_end_utf16: usize,
+}
+
 impl NormalizedChar {
     fn replace(mut self, ch: char) -> Self {
         self.ch = ch;
@@ -84,34 +98,136 @@ impl SurfaceNormalizer {
 fn normalize_chars_raw(value: &str) -> Vec<NormAtom> {
     let atoms = source_atoms(value);
     let atoms = filter_deleted(atoms);
+    let atoms = normalize_line_layout(atoms);
+    let atoms = dehyphenate(atoms);
     let atoms = fold_separators(atoms);
     let atoms = nfkc_atoms(atoms);
     let atoms = case_fold_atoms(atoms);
     let atoms = filter_deleted_or_combining(atoms);
-    let atoms = fold_separators(atoms);
+    let atoms = fold_normalized_separators(atoms);
     let atoms = nfd_atoms(atoms);
     let atoms = filter_deleted_or_combining(atoms);
-    fold_separators(atoms)
+    fold_normalized_separators(atoms)
 }
 
-fn source_atoms(value: &str) -> Vec<NormAtom> {
+fn source_atoms(value: &str) -> Vec<LayoutAtom> {
     let mut result = Vec::new();
-    for (byte_index, original) in value.char_indices() {
-        let original_start_utf16 = value[..byte_index].encode_utf16().count();
-        let original_end_utf16 = original_start_utf16 + original.len_utf16();
-        result.push(NormAtom {
-            ch: original,
+    let mut chars = value.chars().peekable();
+    let mut original_start_utf16 = 0usize;
+    while let Some(original) = chars.next() {
+        let mut original_end_utf16 = original_start_utf16 + original.len_utf16();
+        let mut ch = original;
+        if original == '\r' && chars.peek() == Some(&'\n') {
+            chars.next();
+            original_end_utf16 += '\n'.len_utf16();
+            ch = '\n';
+        }
+        result.push(LayoutAtom {
+            kind: AtomKind::Char(ch),
             original_start_utf16,
             original_end_utf16,
         });
+        original_start_utf16 = original_end_utf16;
     }
     result
 }
 
-fn filter_deleted(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+fn filter_deleted(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
     atoms
         .into_iter()
-        .filter(|atom| !is_deleted(atom.ch))
+        .filter(|atom| !matches!(atom.kind, AtomKind::Char(ch) if is_deleted(ch)))
+        .collect()
+}
+
+fn normalize_line_layout(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
+    let mut result = Vec::new();
+    let mut pending_horizontal_space = Vec::<LayoutAtom>::new();
+    let mut pending_line_break: Option<LayoutAtom> = None;
+    let mut at_line_start = true;
+
+    for atom in atoms {
+        match atom.kind {
+            AtomKind::Char(ch) if is_line_break_char(ch) => {
+                pending_horizontal_space.clear();
+                let line_break = LayoutAtom {
+                    kind: AtomKind::LineBreak,
+                    original_start_utf16: atom.original_start_utf16,
+                    original_end_utf16: atom.original_end_utf16,
+                };
+                pending_line_break = Some(match pending_line_break.take() {
+                    Some(previous) => {
+                        merge_layout_atoms(AtomKind::ParagraphBreak, &[previous, line_break])
+                            .unwrap()
+                    }
+                    None => line_break,
+                });
+                at_line_start = true;
+            }
+            AtomKind::Char(ch) if is_horizontal_space_like(ch) => {
+                if !at_line_start {
+                    pending_horizontal_space.push(atom);
+                }
+            }
+            _ => {
+                if let Some(line_break) = pending_line_break.take() {
+                    result.push(line_break);
+                }
+                if !pending_horizontal_space.is_empty() {
+                    result.push(
+                        merge_layout_atoms(AtomKind::Char(' '), &pending_horizontal_space).unwrap(),
+                    );
+                    pending_horizontal_space.clear();
+                }
+                result.push(atom);
+                at_line_start = false;
+            }
+        }
+    }
+
+    result
+}
+
+fn dehyphenate(atoms: Vec<LayoutAtom>) -> Vec<LayoutAtom> {
+    let mut result = Vec::<LayoutAtom>::with_capacity(atoms.len());
+    let mut index = 0usize;
+    while index < atoms.len() {
+        if index + 2 < atoms.len()
+            && result
+                .last()
+                .is_some_and(|atom| atom.kind.is_latin_letter())
+            && atoms[index].kind.is_hyphen()
+            && atoms[index + 1].kind == AtomKind::LineBreak
+            && atoms[index + 2].kind.is_latin_letter()
+        {
+            index += 2;
+            continue;
+        }
+        result.push(atoms[index].clone());
+        index += 1;
+    }
+    result
+}
+
+fn fold_separators(atoms: Vec<LayoutAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .map(|atom| match atom.kind {
+            AtomKind::Char(ch) if is_space_like(ch) || is_separator_like(ch) => NormAtom {
+                ch: ' ',
+                original_start_utf16: atom.original_start_utf16,
+                original_end_utf16: atom.original_end_utf16,
+            },
+            AtomKind::Char(ch) => NormAtom {
+                ch,
+                original_start_utf16: atom.original_start_utf16,
+                original_end_utf16: atom.original_end_utf16,
+            },
+            AtomKind::LineBreak | AtomKind::ParagraphBreak => NormAtom {
+                ch: ' ',
+                original_start_utf16: atom.original_start_utf16,
+                original_end_utf16: atom.original_end_utf16,
+            },
+        })
         .collect()
 }
 
@@ -122,7 +238,7 @@ fn filter_deleted_or_combining(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
         .collect()
 }
 
-fn fold_separators(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+fn fold_normalized_separators(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
     atoms
         .into_iter()
         .map(|atom| {
@@ -187,6 +303,43 @@ fn merge_atoms(ch: char, atoms: &[NormAtom]) -> Option<NormAtom> {
         original_start_utf16: first.original_start_utf16,
         original_end_utf16: last.original_end_utf16,
     })
+}
+
+fn merge_layout_atoms(kind: AtomKind, atoms: &[LayoutAtom]) -> Option<LayoutAtom> {
+    let first = atoms.first()?;
+    let last = atoms.last()?;
+    Some(LayoutAtom {
+        kind,
+        original_start_utf16: first.original_start_utf16,
+        original_end_utf16: last.original_end_utf16,
+    })
+}
+
+impl AtomKind {
+    fn is_latin_letter(self) -> bool {
+        matches!(self, AtomKind::Char(ch) if ch.is_ascii_alphabetic())
+    }
+
+    fn is_hyphen(self) -> bool {
+        matches!(
+            self,
+            AtomKind::Char('-')
+                | AtomKind::Char('\u{2010}')
+                | AtomKind::Char('\u{2011}')
+                | AtomKind::Char('\u{2012}')
+                | AtomKind::Char('\u{2013}')
+                | AtomKind::Char('\u{2014}')
+                | AtomKind::Char('\u{2212}')
+        )
+    }
+}
+
+fn is_line_break_char(ch: char) -> bool {
+    matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+}
+
+fn is_horizontal_space_like(ch: char) -> bool {
+    is_space_like(ch) && !is_line_break_char(ch)
 }
 
 fn is_space_like(ch: char) -> bool {
@@ -375,6 +528,60 @@ mod tests {
         assert_eq!(space.ch, ' ');
         assert_eq!(space.original_start_utf16, 5);
         assert_eq!(space.original_end_utf16, 8);
+    }
+
+    #[test]
+    fn joins_line_break_hyphenated_latin_words() {
+        let chars = normalize_chars("Pen-\ncil");
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "pencil"
+        );
+        assert_eq!(chars.first().unwrap().original_start_utf16, 0);
+        assert_eq!(chars.last().unwrap().original_end_utf16, 8);
+        assert_eq!(chars[3].ch, 'c');
+        assert_eq!(chars[3].original_start_utf16, 5);
+    }
+
+    #[test]
+    fn keeps_inline_hyphen_as_separator() {
+        assert_eq!(
+            normalize_surface_key("well-known"),
+            Some("well known".to_string())
+        );
+    }
+
+    #[test]
+    fn does_not_join_across_paragraph_breaks() {
+        assert_eq!(
+            normalize_surface_key("appl-\n\ne"),
+            Some("appl e".to_string())
+        );
+        assert_eq!(
+            normalize_surface_key("appl-\n   \ne"),
+            Some("appl e".to_string())
+        );
+    }
+
+    #[test]
+    fn trims_physical_lines_before_folding_line_breaks() {
+        let chars = normalize_chars("Apple   \n   Pencil");
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "apple pencil"
+        );
+        let space = &chars[5];
+        assert_eq!(space.ch, ' ');
+        assert_eq!(space.original_start_utf16, 8);
+        assert_eq!(space.original_end_utf16, 9);
+    }
+
+    #[test]
+    fn treats_crlf_as_one_line_break_for_dehyphenation() {
+        assert_eq!(
+            normalize_surface_key("Pen-\r\ncil"),
+            Some("pencil".to_string())
+        );
     }
 
     #[test]
