@@ -593,6 +593,14 @@ fn status(args: StatusArgs) -> Result<()> {
         runtime.manifest.surface_normalization
     );
     println!("Surfaces: {}", runtime.manifest.surface_count);
+    println!(
+        "Max surface chars: {}",
+        runtime.manifest.max_surface_char_len
+    );
+    println!(
+        "Max surface UTF-16 units: {}",
+        runtime.manifest.max_surface_utf16_len
+    );
     println!("QIDs: {}", runtime.manifest.qid_count);
     println!("Shards: {}", runtime.manifest.automaton_shard_count);
     Ok(())
@@ -658,6 +666,9 @@ fn match_stdin(args: MatchArgs) -> Result<()> {
                 write_event(&mut writer, &event)?;
             }
         }
+    }
+    for event in session.finish() {
+        write_event(&mut writer, &event)?;
     }
     write_event(
         &mut writer,

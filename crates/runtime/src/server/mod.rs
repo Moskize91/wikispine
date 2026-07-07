@@ -97,6 +97,8 @@ async fn metadata(State(state): State<Arc<AppState>>) -> Json<MetadataResponse> 
         format: runtime.manifest.format.clone(),
         surface_normalization: runtime.manifest.surface_normalization.clone(),
         surface_count: runtime.manifest.surface_count,
+        max_surface_char_len: runtime.manifest.max_surface_char_len,
+        max_surface_utf16_len: runtime.manifest.max_surface_utf16_len,
         qid_count: runtime.manifest.qid_count,
         automaton_shard_count: runtime.manifest.automaton_shard_count,
     })
@@ -153,6 +155,11 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
                         })
                     }
                     Ok(WsClientEvent::End) => {
+                        for event in session.finish() {
+                            if send_json(&mut sender, &event).await.is_err() {
+                                return;
+                            }
+                        }
                         if send_json(
                             &mut sender,
                             &ServerEvent::Done {
@@ -272,6 +279,8 @@ struct MetadataResponse {
     format: String,
     surface_normalization: String,
     surface_count: usize,
+    max_surface_char_len: usize,
+    max_surface_utf16_len: usize,
     qid_count: usize,
     automaton_shard_count: usize,
 }

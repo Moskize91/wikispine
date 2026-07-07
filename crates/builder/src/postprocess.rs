@@ -16,6 +16,12 @@ pub struct Args {
     pub out: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct AnnotateManifestArgs {
+    pub preprocess: PathBuf,
+    pub runtime: PathBuf,
+}
+
 impl Default for Args {
     fn default() -> Self {
         Self {
@@ -26,12 +32,30 @@ impl Default for Args {
     }
 }
 
+impl Default for AnnotateManifestArgs {
+    fn default() -> Self {
+        Self {
+            preprocess: PathBuf::from("data/preprocess"),
+            runtime: PathBuf::from("data/runtime"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct SurfaceStats {
     surface_count: usize,
     surface_qid_value_count: usize,
     qid_count: usize,
     flagged_qid_count: usize,
+    max_surface_char_len: usize,
+    max_surface_utf16_len: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SurfaceLengthStats {
+    surface_count: usize,
+    max_surface_char_len: usize,
+    max_surface_utf16_len: usize,
 }
 
 #[derive(Debug)]
@@ -123,6 +147,65 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+pub fn annotate_runtime_manifest(args: AnnotateManifestArgs) -> Result<()> {
+    let surface_qids_path = args.preprocess.join("surface_qids.tsv");
+    let manifest_path = args.runtime.join("manifest.json");
+    for path in [&surface_qids_path, &manifest_path] {
+        if !path.exists() {
+            return Err(err(format!("missing input file: {}", path.display())));
+        }
+    }
+
+    let stats = read_surface_length_stats(&surface_qids_path)?;
+    let mut manifest =
+        serde_json::from_reader::<_, serde_json::Map<String, Value>>(File::open(&manifest_path)?)?;
+    if let Some(surface_count) = manifest.get("surface_count").and_then(Value::as_u64) {
+        if surface_count as usize != stats.surface_count {
+            return Err(err(format!(
+                "surface_count mismatch: manifest has {surface_count}, surface_qids.tsv has {}",
+                stats.surface_count
+            )));
+        }
+    }
+    manifest.insert(
+        "max_surface_char_len".to_string(),
+        Value::from(stats.max_surface_char_len as u64),
+    );
+    manifest.insert(
+        "max_surface_utf16_len".to_string(),
+        Value::from(stats.max_surface_utf16_len as u64),
+    );
+
+    let manifest_file_name = manifest_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| {
+            err(format!(
+                "invalid manifest path: {}",
+                manifest_path.display()
+            ))
+        })?;
+    let tmp_manifest_path =
+        manifest_path.with_file_name(format!(".{manifest_file_name}.annotate.tmp"));
+    if tmp_manifest_path.exists() {
+        fs::remove_file(&tmp_manifest_path)?;
+    }
+    {
+        let mut file = BufWriter::new(File::create(&tmp_manifest_path)?);
+        serde_json::to_writer_pretty(&mut file, &manifest)?;
+        file.write_all(b"\n")?;
+        file.flush()?;
+    }
+    fs::rename(&tmp_manifest_path, &manifest_path)?;
+    println!(
+        "wrote {} max_surface_char_len={} max_surface_utf16_len={}",
+        manifest_path.display(),
+        stats.max_surface_char_len,
+        stats.max_surface_utf16_len
+    );
+    Ok(())
+}
+
 fn write_surface_tables(
     surface_qids_path: &Path,
     qid_flags_path: &Path,
@@ -133,6 +216,8 @@ fn write_surface_tables(
     let mut surface_utf16_lengths = Vec::<u32>::new();
     let mut qid_set = BTreeMap::<u32, u32>::new();
     let mut surface_qid_value_count = 0usize;
+    let mut max_surface_char_len = 0usize;
+    let mut max_surface_utf16_len = 0usize;
 
     let mut index = BufWriter::new(File::create(
         surfaces_out_dir.join("surface_qid_index.bin"),
@@ -165,6 +250,8 @@ fn write_surface_tables(
                 line_number + 1
             ))
         })?;
+        max_surface_char_len = max_surface_char_len.max(surface_key.chars().count());
+        max_surface_utf16_len = max_surface_utf16_len.max(utf16_len as usize);
         surface_utf16_lengths.push(utf16_len);
 
         write_u32(
@@ -204,8 +291,43 @@ fn write_surface_tables(
             surface_qid_value_count,
             qid_count: qid_set.len(),
             flagged_qid_count,
+            max_surface_char_len,
+            max_surface_utf16_len,
         },
     ))
+}
+
+fn read_surface_length_stats(surface_qids_path: &Path) -> Result<SurfaceLengthStats> {
+    let mut surface_count = 0usize;
+    let mut max_surface_char_len = 0usize;
+    let mut max_surface_utf16_len = 0usize;
+
+    for (line_number, line) in BufReader::new(File::open(surface_qids_path)?)
+        .lines()
+        .enumerate()
+    {
+        let line = line?;
+        if line_number == 0 {
+            validate_surface_qids_header(&line)?;
+            continue;
+        }
+        let Some((surface_key, _rest)) = line.split_once('\t') else {
+            return Err(err(format!(
+                "invalid surface_qids row without tab at line {}",
+                line_number + 1
+            )));
+        };
+        let surface_key = tsv::unescape(surface_key);
+        max_surface_char_len = max_surface_char_len.max(surface_key.chars().count());
+        max_surface_utf16_len = max_surface_utf16_len.max(surface_key.encode_utf16().count());
+        surface_count += 1;
+    }
+
+    Ok(SurfaceLengthStats {
+        surface_count,
+        max_surface_char_len,
+        max_surface_utf16_len,
+    })
 }
 
 fn read_qid_flags(path: &Path) -> Result<BTreeMap<u32, u32>> {
@@ -503,6 +625,16 @@ fn write_manifest(
         "  \"surface_qid_value_count\": {},",
         surface_stats.surface_qid_value_count
     )?;
+    writeln!(
+        file,
+        "  \"max_surface_char_len\": {},",
+        surface_stats.max_surface_char_len
+    )?;
+    writeln!(
+        file,
+        "  \"max_surface_utf16_len\": {},",
+        surface_stats.max_surface_utf16_len
+    )?;
     writeln!(file, "  \"qid_count\": {},", surface_stats.qid_count)?;
     writeln!(
         file,
@@ -751,6 +883,8 @@ mod tests {
         let manifest = fs::read_to_string(runtime_dir.join("manifest.json")).unwrap();
         assert!(manifest.contains("\"automaton_shard_count\": 2"));
         assert!(manifest.contains("\"surface_count\": 4"));
+        assert!(manifest.contains("\"max_surface_char_len\": 4"));
+        assert!(manifest.contains("\"max_surface_utf16_len\": 4"));
         assert!(manifest.contains("\"qid_flag_disambiguation\": 1"));
 
         fs::remove_dir_all(root).unwrap();

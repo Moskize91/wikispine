@@ -15,6 +15,9 @@ pub fn run(raw_args: Vec<String>) -> Result<()> {
         "preprocess" | "process" => preprocess::run(parse_preprocess_args(rest)?),
         "compile" => ac_compile::run(parse_compile_args(rest)?),
         "postprocess" => postprocess::run(parse_postprocess_args(rest)?),
+        "annotate-runtime-manifest" => {
+            postprocess::annotate_runtime_manifest(parse_annotate_runtime_manifest_args(rest)?)
+        }
         "-h" | "--help" | "help" => {
             print_help();
             Ok(())
@@ -183,6 +186,36 @@ fn parse_postprocess_args(raw_args: Vec<String>) -> Result<postprocess::Args> {
     Ok(args)
 }
 
+fn parse_annotate_runtime_manifest_args(
+    raw_args: Vec<String>,
+) -> Result<postprocess::AnnotateManifestArgs> {
+    let mut args = postprocess::AnnotateManifestArgs::default();
+    let mut index = 0;
+    while index < raw_args.len() {
+        match raw_args[index].as_str() {
+            "--preprocess" => {
+                index += 1;
+                args.preprocess = PathBuf::from(require_value(&raw_args, index, "--preprocess")?);
+            }
+            "--runtime" => {
+                index += 1;
+                args.runtime = PathBuf::from(require_value(&raw_args, index, "--runtime")?);
+            }
+            "-h" | "--help" => {
+                print_annotate_runtime_manifest_help();
+                std::process::exit(0);
+            }
+            unknown => {
+                return Err(err(format!(
+                    "unknown annotate-runtime-manifest option: {unknown}"
+                )))
+            }
+        }
+        index += 1;
+    }
+    Ok(args)
+}
+
 fn require_value<'a>(args: &'a [String], index: usize, option: &str) -> Result<&'a str> {
     args.get(index)
         .map(String::as_str)
@@ -213,6 +246,8 @@ fn print_help() {
     println!("  preprocess   Build surface text -> QID[] tables");
     println!("  compile      Compile surface text into an Aho-Corasick automaton");
     println!("  postprocess  Package runtime automaton and surface QID tables");
+    println!("  annotate-runtime-manifest");
+    println!("               Add derived surface length stats to an existing runtime manifest");
 }
 
 fn print_download_help() {
@@ -250,4 +285,10 @@ fn print_postprocess_help() {
     println!("  --preprocess <dir>           Preprocess directory (default: data/preprocess)");
     println!("  --compile <dir>              Compile directory (default: data/compile)");
     println!("  --out <dir>                  Output directory (default: data/runtime)");
+}
+
+fn print_annotate_runtime_manifest_help() {
+    println!("Usage: wikispine-builder annotate-runtime-manifest [options]");
+    println!("  --preprocess <dir>           Preprocess directory (default: data/preprocess)");
+    println!("  --runtime <dir>              Runtime directory containing manifest.json (default: data/runtime)");
 }

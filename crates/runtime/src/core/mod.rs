@@ -75,12 +75,14 @@ impl RuntimeDataset {
         F: FnMut(TextMatch) -> bool,
     {
         let mut session = MatchSession::new(self.shard_count(), options.clone());
-        for event in session.process_chunk(text, self) {
-            let ServerEvent::Match { r#match } = event else {
-                continue;
-            };
-            if !on_match(r#match) {
-                break;
+        for events in [session.process_chunk(text, self), session.finish()] {
+            for event in events {
+                let ServerEvent::Match { r#match } = event else {
+                    continue;
+                };
+                if !on_match(r#match) {
+                    return;
+                }
             }
         }
     }
@@ -151,6 +153,9 @@ pub struct MatchSession {
     normalized_offset_utf16: usize,
     normalized_original_starts: Vec<usize>,
     normalized_original_ends: Vec<usize>,
+    normalized_chars_start: Vec<Option<char>>,
+    normalized_chars_end: Vec<Option<char>>,
+    pending_matches: Vec<PendingMatch>,
     pub match_count: usize,
 }
 
@@ -164,6 +169,9 @@ impl MatchSession {
             normalized_offset_utf16: 0,
             normalized_original_starts: Vec::new(),
             normalized_original_ends: Vec::new(),
+            normalized_chars_start: Vec::new(),
+            normalized_chars_end: Vec::new(),
+            pending_matches: Vec::new(),
             match_count: 0,
         }
     }
@@ -175,20 +183,29 @@ impl MatchSession {
         self.normalized_offset_utf16 = 0;
         self.normalized_original_starts.clear();
         self.normalized_original_ends.clear();
+        self.normalized_chars_start.clear();
+        self.normalized_chars_end.clear();
+        self.pending_matches.clear();
         self.match_count = 0;
     }
 
     pub fn process_chunk(&mut self, chunk: &str, dataset: &RuntimeDataset) -> Vec<ServerEvent> {
         let normalized = self.normalizer.normalize_chunk(chunk);
         let mut matches = Vec::new();
+        if let Some(first) = normalized.first() {
+            resolve_pending_matches(&mut self.pending_matches, Some(first.ch), &mut matches);
+        }
+        let mut chunk_pending_matches = Vec::<PendingMatch>::new();
         let mut context = ShardScanContext {
             normalized_base_offset: self.normalized_offset_utf16,
-            original_base_offset: self.offset_utf16,
             normalized_original_starts: &mut self.normalized_original_starts,
             normalized_original_ends: &mut self.normalized_original_ends,
+            normalized_chars_start: &mut self.normalized_chars_start,
+            normalized_chars_end: &mut self.normalized_chars_end,
             dataset,
             options: &self.options,
             matches: &mut matches,
+            pending_matches: &mut chunk_pending_matches,
         };
         for (shard_index, shard) in dataset.shards.iter().enumerate() {
             let state_id = self
@@ -203,11 +220,31 @@ impl MatchSession {
             .map(|item| item.ch.len_utf16())
             .sum::<usize>();
         self.offset_utf16 += chunk.encode_utf16().count();
+        resolve_chunk_pending_matches(
+            chunk_pending_matches,
+            &self.normalized_chars_start,
+            &mut matches,
+            &mut self.pending_matches,
+        );
         trim_original_end_map(
             &mut self.normalized_original_starts,
             &mut self.normalized_original_ends,
+            &mut self.normalized_chars_start,
+            &mut self.normalized_chars_end,
             self.normalized_offset_utf16,
         );
+        matches.sort_by_key(|matched| (matched.start, matched.end, matched.surface_id));
+        self.match_count += matches.len();
+        matches
+            .into_iter()
+            .map(|matched| ServerEvent::Match { r#match: matched })
+            .collect()
+    }
+
+    pub fn finish(&mut self) -> Vec<ServerEvent> {
+        self.normalizer.finish();
+        let mut matches = Vec::new();
+        resolve_pending_matches(&mut self.pending_matches, None, &mut matches);
         matches.sort_by_key(|matched| (matched.start, matched.end, matched.surface_id));
         self.match_count += matches.len();
         matches
@@ -219,12 +256,20 @@ impl MatchSession {
 
 struct ShardScanContext<'a> {
     normalized_base_offset: usize,
-    original_base_offset: usize,
     normalized_original_starts: &'a mut Vec<usize>,
     normalized_original_ends: &'a mut Vec<usize>,
+    normalized_chars_start: &'a mut Vec<Option<char>>,
+    normalized_chars_end: &'a mut Vec<Option<char>>,
     dataset: &'a RuntimeDataset,
     options: &'a MatchOptions,
     matches: &'a mut Vec<TextMatch>,
+    pending_matches: &'a mut Vec<PendingMatch>,
+}
+
+#[derive(Debug)]
+struct PendingMatch {
+    normalized_end: usize,
+    matched: TextMatch,
 }
 
 #[derive(Debug)]
@@ -266,10 +311,14 @@ impl AutomatonShard {
             let normalized_start = normalized_end - item.ch.len_utf16();
             ensure_original_map_len(context.normalized_original_starts, normalized_end);
             ensure_original_map_len(context.normalized_original_ends, normalized_end);
-            let original_start = context.original_base_offset + item.original_start_utf16;
-            let original_end = context.original_base_offset + item.original_end_utf16;
+            ensure_char_map_len(context.normalized_chars_start, normalized_end);
+            ensure_char_map_len(context.normalized_chars_end, normalized_end);
+            let original_start = item.original_start_utf16;
+            let original_end = item.original_end_utf16;
             context.normalized_original_starts[normalized_start] = original_start;
             context.normalized_original_ends[normalized_end] = original_end;
+            context.normalized_chars_start[normalized_start] = Some(item.ch);
+            context.normalized_chars_end[normalized_end] = Some(item.ch);
             self.push_outputs_at_state(state_id, normalized_end, context);
         }
     }
@@ -304,7 +353,19 @@ impl AutomatonShard {
         context: &mut ShardScanContext,
     ) {
         if let Some(matched) = self.build_match(normalized_end, output, context) {
-            context.matches.push(matched);
+            let needs_right_boundary = context
+                .normalized_chars_end
+                .get(normalized_end)
+                .and_then(|ch| *ch)
+                .is_some_and(is_ascii_word);
+            if needs_right_boundary {
+                context.pending_matches.push(PendingMatch {
+                    normalized_end,
+                    matched,
+                });
+            } else {
+                context.matches.push(matched);
+            }
         }
     }
 
@@ -321,6 +382,13 @@ impl AutomatonShard {
         let normalized_start = normalized_end - length;
         let start = *context.normalized_original_starts.get(normalized_start)?;
         let end = *context.normalized_original_ends.get(normalized_end)?;
+        if !left_boundary_allows_match(
+            normalized_start,
+            context.normalized_chars_start,
+            context.normalized_chars_end,
+        ) {
+            return None;
+        }
         let qids = context
             .dataset
             .qids_for_surface(output.surface_id, context.options);
@@ -401,7 +469,19 @@ fn ensure_original_map_len(map: &mut Vec<usize>, normalized_end: usize) {
     }
 }
 
-fn trim_original_end_map(starts: &mut [usize], ends: &mut [usize], normalized_offset_utf16: usize) {
+fn ensure_char_map_len(map: &mut Vec<Option<char>>, normalized_end: usize) {
+    if map.len() <= normalized_end {
+        map.resize(normalized_end + 1, None);
+    }
+}
+
+fn trim_original_end_map(
+    starts: &mut [usize],
+    ends: &mut [usize],
+    chars_start: &mut [Option<char>],
+    chars_end: &mut [Option<char>],
+    normalized_offset_utf16: usize,
+) {
     const KEEP_UTF16: usize = 4096;
     if normalized_offset_utf16 > KEEP_UTF16 && ends.len() > KEEP_UTF16 * 2 {
         let remove_until = normalized_offset_utf16 - KEEP_UTF16;
@@ -410,8 +490,63 @@ fn trim_original_end_map(starts: &mut [usize], ends: &mut [usize], normalized_of
                 *start = 0;
             }
             ends[index] = 0;
+            if let Some(ch) = chars_start.get_mut(index) {
+                *ch = None;
+            }
+            if let Some(ch) = chars_end.get_mut(index) {
+                *ch = None;
+            }
         }
     }
+}
+
+fn left_boundary_allows_match(
+    normalized_start: usize,
+    chars_start: &[Option<char>],
+    chars_end: &[Option<char>],
+) -> bool {
+    let Some(first) = chars_start.get(normalized_start).and_then(|ch| *ch) else {
+        return false;
+    };
+    if !is_ascii_word(first) {
+        return true;
+    }
+    !chars_end
+        .get(normalized_start)
+        .and_then(|ch| *ch)
+        .is_some_and(is_ascii_word)
+}
+
+fn resolve_chunk_pending_matches(
+    pending: Vec<PendingMatch>,
+    chars_start: &[Option<char>],
+    matches: &mut Vec<TextMatch>,
+    session_pending: &mut Vec<PendingMatch>,
+) {
+    for item in pending {
+        match chars_start.get(item.normalized_end).and_then(|ch| *ch) {
+            Some(next) if is_ascii_word(next) => {}
+            Some(_) => matches.push(item.matched),
+            None => session_pending.push(item),
+        }
+    }
+}
+
+fn resolve_pending_matches(
+    pending: &mut Vec<PendingMatch>,
+    next_char: Option<char>,
+    matches: &mut Vec<TextMatch>,
+) {
+    let should_emit = !next_char.is_some_and(is_ascii_word);
+    for item in pending.drain(..) {
+        if should_emit {
+            matches.push(item.matched);
+        }
+    }
+}
+
+fn is_ascii_word(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
 }
 
 #[derive(Debug)]
@@ -501,6 +636,8 @@ pub struct Manifest {
     mode: String,
     pub surface_count: usize,
     surface_qid_value_count: usize,
+    pub max_surface_char_len: usize,
+    pub max_surface_utf16_len: usize,
     pub qid_count: usize,
     pub automaton_shard_count: usize,
     automaton_shards: Vec<AutomatonShardManifest>,
@@ -581,4 +718,76 @@ pub struct QidCandidate {
     pub qid: String,
     pub qid_number: u32,
     pub disambiguation: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn left_boundary_rejects_ascii_word_continuation() {
+        let (starts, ends) = char_maps("pineapple");
+
+        assert!(!left_boundary_allows_match(4, &starts, &ends));
+    }
+
+    #[test]
+    fn left_boundary_allows_cjk_ascii_boundary() {
+        let (starts, ends) = char_maps("苹果apple");
+
+        assert!(left_boundary_allows_match(2, &starts, &ends));
+    }
+
+    #[test]
+    fn right_boundary_rejects_ascii_word_continuation() {
+        let mut pending = vec![pending_match(3)];
+        let mut matches = Vec::new();
+
+        resolve_pending_matches(&mut pending, Some('c'), &mut matches);
+
+        assert!(pending.is_empty());
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn right_boundary_allows_cjk_and_eof_boundaries() {
+        let mut pending = vec![pending_match(5)];
+        let mut matches = Vec::new();
+        resolve_pending_matches(&mut pending, Some('壳'), &mut matches);
+        assert_eq!(matches.len(), 1);
+
+        pending.push(pending_match(5));
+        resolve_pending_matches(&mut pending, None, &mut matches);
+        assert_eq!(matches.len(), 2);
+    }
+
+    fn char_maps(value: &str) -> (Vec<Option<char>>, Vec<Option<char>>) {
+        let mut starts = Vec::new();
+        let mut ends = Vec::new();
+        let mut position = 0usize;
+        for ch in value.chars() {
+            let end = position + ch.len_utf16();
+            if starts.len() <= end {
+                starts.resize(end + 1, None);
+                ends.resize(end + 1, None);
+            }
+            starts[position] = Some(ch);
+            ends[end] = Some(ch);
+            position = end;
+        }
+        (starts, ends)
+    }
+
+    fn pending_match(normalized_end: usize) -> PendingMatch {
+        PendingMatch {
+            normalized_end,
+            matched: TextMatch {
+                start: 0,
+                end: 1,
+                surface_id: 1,
+                shard_id: 0,
+                qids: Vec::new(),
+            },
+        }
+    }
 }
