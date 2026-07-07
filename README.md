@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/Moskize91/wikispine/main/scripts/in
 Install a specific released version:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Moskize91/wikispine/main/scripts/install.sh | sh -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/Moskize91/wikispine/main/scripts/install.sh | sh -s -- --version v0.1.1
 ```
 
 The installer downloads the matching GitHub Release archive for your OS and CPU architecture,
@@ -59,9 +59,9 @@ wikispine --version
 These should agree:
 
 ```text
-GitHub Release tag: v0.1.0
-Archive name:       wikispine-0.1.0-macos-aarch64.tar.gz
-CLI output:         wikispine 0.1.0
+GitHub Release tag: v0.1.1
+Archive name:       wikispine-0.1.1-macos-aarch64.tar.gz
+CLI output:         wikispine 0.1.1
 ```
 
 If you need a reproducible install, pass `--version vX.Y.Z` to the installer instead of using the
