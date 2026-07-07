@@ -501,6 +501,8 @@ pub struct Manifest {
     mode: String,
     pub surface_count: usize,
     surface_qid_value_count: usize,
+    pub max_surface_char_len: usize,
+    pub max_surface_utf16_len: usize,
     pub qid_count: usize,
     pub automaton_shard_count: usize,
     automaton_shards: Vec<AutomatonShardManifest>,

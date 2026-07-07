@@ -11,6 +11,15 @@ pub struct NormalizedChar {
     pub original_end_utf16: usize,
 }
 
+type NormAtom = NormalizedChar;
+
+impl NormalizedChar {
+    fn replace(mut self, ch: char) -> Self {
+        self.ch = ch;
+        self
+    }
+}
+
 pub fn normalize_surface_key(value: &str) -> Option<String> {
     let normalized = normalize_chars(value)
         .into_iter()
@@ -51,7 +60,10 @@ impl SurfaceNormalizer {
         for item in normalize_chars_raw(value) {
             if item.ch == ' ' {
                 if self.emitted_any {
-                    self.pending_space = Some(item);
+                    self.pending_space = Some(match self.pending_space.take() {
+                        Some(previous) => merge_atoms(' ', &[previous, item]).unwrap(),
+                        None => item,
+                    });
                 }
                 continue;
             }
@@ -69,49 +81,112 @@ impl SurfaceNormalizer {
     }
 }
 
-fn normalize_chars_raw(value: &str) -> Vec<NormalizedChar> {
+fn normalize_chars_raw(value: &str) -> Vec<NormAtom> {
+    let atoms = source_atoms(value);
+    let atoms = filter_deleted(atoms);
+    let atoms = fold_separators(atoms);
+    let atoms = nfkc_atoms(atoms);
+    let atoms = case_fold_atoms(atoms);
+    let atoms = filter_deleted_or_combining(atoms);
+    let atoms = fold_separators(atoms);
+    let atoms = nfd_atoms(atoms);
+    let atoms = filter_deleted_or_combining(atoms);
+    fold_separators(atoms)
+}
+
+fn source_atoms(value: &str) -> Vec<NormAtom> {
     let mut result = Vec::new();
     for (byte_index, original) in value.char_indices() {
         let original_start_utf16 = value[..byte_index].encode_utf16().count();
         let original_end_utf16 = original_start_utf16 + original.len_utf16();
-        if is_deleted(original) {
-            continue;
-        }
-        let mapped = if is_space_like(original) || is_separator_like(original) {
-            " ".to_string()
-        } else {
-            original.to_string()
-        };
-        for normalized in mapped.nfkc().case_fold() {
-            if is_deleted(normalized) || is_combining_mark(normalized) {
-                continue;
-            }
-            if is_space_like(normalized) || is_separator_like(normalized) {
-                result.push(NormalizedChar {
-                    ch: ' ',
-                    original_start_utf16,
-                    original_end_utf16,
-                });
-                continue;
-            }
-            for decomposed in normalized.to_string().nfd() {
-                if is_deleted(decomposed) || is_combining_mark(decomposed) {
-                    continue;
-                }
-                let ch = if is_space_like(decomposed) || is_separator_like(decomposed) {
-                    ' '
-                } else {
-                    decomposed
-                };
-                result.push(NormalizedChar {
-                    ch,
-                    original_start_utf16,
-                    original_end_utf16,
-                });
-            }
-        }
+        result.push(NormAtom {
+            ch: original,
+            original_start_utf16,
+            original_end_utf16,
+        });
     }
     result
+}
+
+fn filter_deleted(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .filter(|atom| !is_deleted(atom.ch))
+        .collect()
+}
+
+fn filter_deleted_or_combining(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .filter(|atom| !is_deleted(atom.ch) && !is_combining_mark(atom.ch))
+        .collect()
+}
+
+fn fold_separators(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .map(|atom| {
+            if is_space_like(atom.ch) || is_separator_like(atom.ch) {
+                atom.replace(' ')
+            } else {
+                atom
+            }
+        })
+        .collect()
+}
+
+fn nfkc_atoms(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .flat_map(|atom| {
+            let normalized = atom.ch.to_string().nfkc().collect::<Vec<_>>();
+            fork_atom(atom, normalized)
+        })
+        .collect()
+}
+
+fn case_fold_atoms(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .flat_map(|atom| {
+            let folded = atom.ch.to_string().case_fold().collect::<Vec<_>>();
+            fork_atom(atom, folded)
+        })
+        .collect()
+}
+
+fn nfd_atoms(atoms: Vec<NormAtom>) -> Vec<NormAtom> {
+    atoms
+        .into_iter()
+        .flat_map(|atom| {
+            let decomposed = atom.ch.to_string().nfd().collect::<Vec<_>>();
+            fork_atom(atom, decomposed)
+        })
+        .collect()
+}
+
+fn fork_atom<I>(atom: NormAtom, chars: I) -> Vec<NormAtom>
+where
+    I: IntoIterator<Item = char>,
+{
+    chars
+        .into_iter()
+        .map(|ch| NormAtom {
+            ch,
+            original_start_utf16: atom.original_start_utf16,
+            original_end_utf16: atom.original_end_utf16,
+        })
+        .collect()
+}
+
+fn merge_atoms(ch: char, atoms: &[NormAtom]) -> Option<NormAtom> {
+    let first = atoms.first()?;
+    let last = atoms.last()?;
+    Some(NormAtom {
+        ch,
+        original_start_utf16: first.original_start_utf16,
+        original_end_utf16: last.original_end_utf16,
+    })
 }
 
 fn is_space_like(ch: char) -> bool {
@@ -272,6 +347,34 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn preserves_expanded_atom_offsets() {
+        let chars = normalize_chars("Straße");
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "strasse"
+        );
+        assert_eq!(chars[4].ch, 's');
+        assert_eq!(chars[4].original_start_utf16, 4);
+        assert_eq!(chars[4].original_end_utf16, 5);
+        assert_eq!(chars[5].ch, 's');
+        assert_eq!(chars[5].original_start_utf16, 4);
+        assert_eq!(chars[5].original_end_utf16, 5);
+    }
+
+    #[test]
+    fn merged_space_covers_original_space_run() {
+        let chars = normalize_chars("Apple   Pencil");
+        assert_eq!(
+            chars.iter().map(|item| item.ch).collect::<String>(),
+            "apple pencil"
+        );
+        let space = &chars[5];
+        assert_eq!(space.ch, ' ');
+        assert_eq!(space.original_start_utf16, 5);
+        assert_eq!(space.original_end_utf16, 8);
     }
 
     #[test]
