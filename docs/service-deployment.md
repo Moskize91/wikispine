@@ -78,6 +78,17 @@ docker run --rm \
   wikispine-service:0.1.0
 ```
 
+For example, in a production environment where the runtime package is stored on a managed network
+filesystem, mount that filesystem on the host and bind the dataset directory into the container:
+
+```bash
+docker run --rm \
+  -p 9000:9000 \
+  -e WIKISPINE_DATA_DIR=/data/runtime \
+  -v /share/zh-en-20260702:/data/runtime:ro \
+  wikispine-service:0.1.0
+```
+
 The service listens on `0.0.0.0:$PORT`; the image default is `PORT=9000`.
 
 Health checks:
