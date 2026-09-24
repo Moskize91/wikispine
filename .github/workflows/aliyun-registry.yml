@@ -1,0 +1,75 @@
+name: Alibaba Cloud Container Registry Credentials
+
+on:
+  workflow_call:
+    outputs:
+      username:
+        description: Temporary Alibaba Cloud Container Registry username
+        value: ${{ jobs.credentials.outputs.username }}
+      token:
+        description: Temporary Alibaba Cloud Container Registry token
+        value: ${{ jobs.credentials.outputs.token }}
+    inputs:
+      role-to-assume:
+        type: string
+        default: acs:ram::1354810585726671:role/docker-registry
+      oidc-provider:
+        type: string
+        default: acs:ram::1354810585726671:oidc-provider/github-oomol
+      audience:
+        type: string
+        default: https://github.com/oomol
+      endpoint:
+        type: string
+        default: cr.ap-southeast-1.aliyuncs.com
+      instance-id:
+        type: string
+        default: cri-6pqcluf3zgqswn3a
+      region:
+        type: string
+        default: ap-southeast-1
+
+jobs:
+  credentials:
+    runs-on: ubuntu-latest
+    outputs:
+      username: ${{ steps.registry-token.outputs.username }}
+      token: ${{ steps.registry-token.outputs.token }}
+
+    steps:
+      - name: Configure Alibaba Cloud credentials
+        id: aliyun-credentials
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1
+        with:
+          role-to-assume: ${{ inputs.role-to-assume }}
+          oidc-provider-arn: ${{ inputs.oidc-provider }}
+          audience: ${{ inputs.audience }}
+          role-session-name: github-wikispine-${{ github.run_id }}-${{ github.run_attempt }}
+          role-session-expiration: 1800
+
+      - name: Install Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
+        with:
+          version: "3.4.11"
+
+      - name: Get temporary registry token
+        id: registry-token
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ steps.aliyun-credentials.outputs.aliyun-access-key-id }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ steps.aliyun-credentials.outputs.aliyun-access-key-secret }}
+          ALIYUN_SECURITY_TOKEN: ${{ steps.aliyun-credentials.outputs.aliyun-security-token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_json="$(aliyun cr GetAuthorizationToken \
+            --mode StsToken \
+            --access-key-id "${ALIYUN_ACCESS_KEY_ID}" \
+            --access-key-secret "${ALIYUN_ACCESS_KEY_SECRET}" \
+            --sts-token "${ALIYUN_SECURITY_TOKEN}" \
+            --region "${{ inputs.region }}" \
+            --endpoint "${{ inputs.endpoint }}" \
+            --InstanceId "${{ inputs.instance-id }}")"
+          username="$(jq -er '.TempUsername' <<<"${auth_json}")"
+          token="$(jq -er '.AuthorizationToken' <<<"${auth_json}")"
+          echo "username=${username}" >> "${GITHUB_OUTPUT}"
+          echo "token=${token}" >> "${GITHUB_OUTPUT}"
