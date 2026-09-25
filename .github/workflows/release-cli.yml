@@ -1,13 +1,24 @@
-name: Release CLI
+name: Release Wikispine
 
-# Manual release workflow for the wikispine CLI binary only.
-# It does not run wikispine-builder and does not generate runtime datasets.
+# Manual release workflow for the wikispine CLI and lightweight service image.
+# The service image is deployed to the Singapore development FC only. Production
+# functions are intentionally outside this workflow and require a manual update.
 
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
+
+env:
+  ACR_REGISTRY: oomol-registry.ap-southeast-1.cr.aliyuncs.com
+  ACR_IMAGE: oomol-registry.ap-southeast-1.cr.aliyuncs.com/oomol/wikispine-service
+  ACR_INSTANCE_ID: cri-6pqcluf3zgqswn3a
+  ACR_REGION: ap-southeast-1
+  ALIYUN_FC_ROLE_ARN: acs:ram::1368962511430008:role/fc-dev-deploy
+  ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1368962511430008:oidc-provider/dev-oidc
+  ALIYUN_OIDC_AUDIENCE: github-actions
+  FC_DEV_FUNCTION_NAME: wikispine-dev
 
 concurrency:
   group: release-cli
@@ -141,11 +152,73 @@ jobs:
             dist/*.zip
             dist/*.sha256
 
+  service-image:
+    name: Publish service image
+    needs: prepare
+    uses: ./.github/workflows/publish-service-image.yml
+    with:
+      tag: ${{ needs.prepare.outputs.version }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+
+  deploy-dev-fc:
+    name: Deploy service image to Singapore dev FC
+    needs: service-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Alibaba Cloud credentials
+        id: aliyun-credentials
+        uses: aliyun/configure-aliyun-credentials-action@1e5248c8d5d93a8781ac344a68e19a43341e79e6 # v1
+        with:
+          role-to-assume: ${{ env.ALIYUN_FC_ROLE_ARN }}
+          oidc-provider-arn: ${{ env.ALIYUN_OIDC_PROVIDER_ARN }}
+          audience: ${{ env.ALIYUN_OIDC_AUDIENCE }}
+          role-session-name: github-wikispine-fc-${{ github.run_id }}-${{ github.run_attempt }}
+          role-session-expiration: 1800
+
+      - name: Install Alibaba Cloud CLI
+        uses: aliyun/setup-aliyun-cli-action@09a5f86915bb556e27bf050e9a5e339aeb073df5 # v1
+        with:
+          version: "3.4.11"
+
+      - name: Configure Alibaba Cloud CLI
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ steps.aliyun-credentials.outputs.aliyun-access-key-id }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ steps.aliyun-credentials.outputs.aliyun-access-key-secret }}
+          ALIYUN_SECURITY_TOKEN: ${{ steps.aliyun-credentials.outputs.aliyun-security-token }}
+        run: |
+          set -euo pipefail
+          aliyun configure set \
+            --mode StsToken \
+            --access-key-id "$ALIYUN_ACCESS_KEY_ID" \
+            --access-key-secret "$ALIYUN_ACCESS_KEY_SECRET" \
+            --sts-token "$ALIYUN_SECURITY_TOKEN" \
+            --region "$ACR_REGION"
+
+      - name: Update development FC image
+        run: |
+          set -euo pipefail
+          python3 scripts/deploy-dev-fc.py \
+            --function-name "$FC_DEV_FUNCTION_NAME" \
+            --image "${{ needs.service-image.outputs.image }}" \
+            --acr-instance-id "$ACR_INSTANCE_ID" \
+            --region "$ACR_REGION"
+
   publish:
     name: Publish GitHub Release
     needs:
       - prepare
       - package
+      - deploy-dev-fc
     runs-on: ubuntu-latest
 
     steps:
@@ -178,9 +251,13 @@ jobs:
         run: |
           set -euo pipefail
           cat > RELEASE_NOTES.md <<'NOTES'
-          This release contains prebuilt `wikispine` CLI binaries only.
+          This release contains prebuilt `wikispine` CLI binaries and a service image.
 
-          It does not include the runtime dataset. After installing the CLI, run:
+          The service image is published to Singapore ACR and deployed to the
+          `wikispine-dev` Function Compute function. It does not include the runtime
+          dataset, which remains mounted from NAS.
+
+          After installing the CLI, run:
 
           ```bash
           wikispine init
