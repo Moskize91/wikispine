@@ -238,6 +238,7 @@ jobs:
           ghcr_image="ghcr.io/${owner}/wikispine-service"
           docker buildx build \
             --platform linux/amd64 \
+            --provenance=false \
             -f docker/Dockerfile \
             --tag "${ghcr_image}:${version}" \
             --tag "${ghcr_image}:latest" \
