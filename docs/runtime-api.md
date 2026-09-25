@@ -72,7 +72,15 @@ Response:
 
 ## WebSocket Match
 
-`GET /match` 可以升级为 WebSocket。WebSocket 用于临时性的双向流：客户端分 chunk 发送文本，服务端边接收边返回 match event。
+`GET /match` 可以升级为 WebSocket。每条连接表示一条连续的逻辑文本流；客户端可以在服务端消费前持续提交 chunk，服务端通过有界 window 提供背压。
+
+连接建立后，服务端先发送：
+
+```json
+{"type":"ready","max_message_bytes":1048576,"window":65536}
+```
+
+`max_message_bytes` 是 WebSocket 协议层对单条 message payload 的硬限制，包含完整 JSON 报文。超限时服务端在 JSON 解析前关闭连接，不发送应用层错误。`window` 使用 JavaScript `String.length` 的 UTF-16 code unit 数量；它限制已接收但尚未被 matcher 消费的文本积压。
 
 Client events:
 
@@ -88,15 +96,16 @@ Server events:
 ```json
 {"type":"started"}
 {"type":"match","match":{"start":0,"end":4,"surface_id":93172679,"shard_id":1,"qids":[{"qid":"Q16952","qid_number":16952,"disambiguation":false}]}}
-{"type":"ack","received_chars":4}
+{"type":"ack","consumed":2,"available":65534}
 {"type":"done","stats":{"matches":1}}
 ```
 
 注意事项：
 
-- WebSocket 连接是临时连接，客户端必须能处理断开和重连。
-- 服务端按连接维护 automaton state，因此可以识别跨 chunk 的 surface。
-- `end` 会结束当前输入流并返回 `done`；之后连接仍可继续发送新的 `start/chunk/end` 序列。
+- WebSocket 连接只承载一条逻辑文本流。`chunk` 只是传输分片，不是独立的 match 请求；服务端按连接维护 automaton 和 normalizer state，因此可以识别跨 chunk 的 surface。
+- 客户端可以在 window 尚有额度时持续发送 chunk。每个 chunk 被 matcher 消费后，服务端通过 `ack.consumed` 归还额度。
+- `end` 表示客户端不会再提交文本。服务端会消费完队列、推送所有 match、推送 `done`，然后主动以正常 close 关闭连接。
+- 超过当前 window、违反消息顺序或发送无效 JSON 时，服务端直接关闭 WebSocket；超大 message 使用 close code `1009`。
 - 长时间空闲连接可能被部署环境关闭，客户端应支持 keepalive。
 
 ## Metadata

@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "wikispine-builder"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
  "wikispine-core",
@@ -1540,7 +1540,7 @@ dependencies = [
 
 [[package]]
 name = "wikispine-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "unicode-casefold",
  "unicode-general-category",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "wikispine-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "bytes",
