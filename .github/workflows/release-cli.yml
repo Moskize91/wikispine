@@ -18,7 +18,7 @@ env:
   ACR_API_ENDPOINT: cr.ap-southeast-1.aliyuncs.com
   ALIYUN_ACR_ROLE_ARN: acs:ram::1354810585726671:role/docker-registry
   ALIYUN_ACR_OIDC_PROVIDER_ARN: acs:ram::1354810585726671:oidc-provider/github-oomol
-  ALIYUN_ACR_OIDC_AUDIENCE: https://github.com/oomol
+  ALIYUN_ACR_OIDC_AUDIENCE: github-actions
   ALIYUN_FC_ROLE_ARN: acs:ram::1368962511430008:role/fc-dev-deploy
   ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1368962511430008:oidc-provider/dev-oidc
   ALIYUN_OIDC_AUDIENCE: github-actions
