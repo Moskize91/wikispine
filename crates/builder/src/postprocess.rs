@@ -850,22 +850,28 @@ mod tests {
 
         let values = fs::read(runtime_dir.join("surfaces/surface_qid_values.bin")).unwrap();
         let values = values
-            .chunks_exact(4)
-            .map(read_u32_chunk)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| read_u32_chunk(chunk))
             .collect::<Vec<_>>();
         assert_eq!(values, vec![956, 13371, 3918, 3918, 8686]);
 
         let qid_numbers = fs::read(runtime_dir.join("qids/qid_numbers.bin")).unwrap();
         let qid_numbers = qid_numbers
-            .chunks_exact(4)
-            .map(read_u32_chunk)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| read_u32_chunk(chunk))
             .collect::<Vec<_>>();
         assert_eq!(qid_numbers, vec![956, 3918, 8686, 13371]);
 
         let qid_flags = fs::read(runtime_dir.join("qids/qid_flags.bin")).unwrap();
         let qid_flags = qid_flags
-            .chunks_exact(4)
-            .map(read_u32_chunk)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| read_u32_chunk(chunk))
             .collect::<Vec<_>>();
         assert_eq!(qid_flags, vec![0, 0, 0, 1]);
 
