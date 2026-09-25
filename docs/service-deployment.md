@@ -57,27 +57,24 @@ Build the lightweight service image:
 scripts/build-service-image.sh --tag wikispine-service:0.1.0 --load
 ```
 
-The repository also provides a GitHub Actions workflow, `Publish Service Image`, for publishing the
-lightweight image. It can be run manually with an explicit service image tag, such as
-`service-20260702`, or called by the release workflow with the Cargo package version. It pushes the
-same build to GitHub Container Registry and the OOMOL Alibaba Cloud Container Registry instance in
-Singapore:
+The `Release Wikispine` GitHub Actions workflow publishes the lightweight image with the same
+version as the CLI. It pushes the same build to GitHub Container Registry and the OOMOL Alibaba
+Cloud Container Registry instance in Singapore:
 
 ```text
-ghcr.io/<owner>/wikispine-service:<tag>
-oomol-registry.ap-southeast-1.cr.aliyuncs.com/oomol/wikispine-service:<tag>
+ghcr.io/<owner>/wikispine-service:<version>
+oomol-registry.ap-southeast-1.cr.aliyuncs.com/oomol/wikispine-service:<version>
 ```
 
-The workflow uses GitHub OIDC to assume the `docker-registry` Alibaba Cloud RAM role through the
-local reusable `aliyun-registry.yml` workflow. It then requests a short-lived Container Registry
-authorization token for the current run. No long-lived Alibaba Cloud or Container Registry
-credential is stored in GitHub.
+The release job uses GitHub OIDC to assume the `docker-registry` Alibaba Cloud RAM role and requests
+a short-lived Container Registry authorization token for the current run. No long-lived Alibaba
+Cloud or Container Registry credential is stored in GitHub.
 
-The `Release Wikispine` workflow publishes the CLI and service image together. After the image is
-published, it updates only the Singapore development FC function `wikispine-dev` using the dedicated
-`fc-dev-deploy` OIDC role. The function's existing custom-container settings are read and preserved,
-including the NAS-backed runtime configuration. Production FC functions are not referenced by this
-workflow and must be updated manually.
+After the image is published, the workflow updates only the Singapore development FC function
+`wikispine-dev` using the dedicated `fc-dev-deploy` OIDC role. The function's existing
+custom-container settings are read and preserved, including the NAS-backed runtime configuration.
+Production FC functions are not referenced by this workflow and must be updated manually to a
+released version image.
 
 The image contains only the `wikispine` binary. It does not include runtime data and declares
 `/data/runtime` as a volume. A runtime data directory must be mounted there, or the service exits at
