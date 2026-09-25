@@ -177,19 +177,6 @@ impl MatchSession {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.shard_states.fill(ROOT_STATE_ID);
-        self.normalizer.reset();
-        self.offset_utf16 = 0;
-        self.normalized_offset_utf16 = 0;
-        self.normalized_original_starts.clear();
-        self.normalized_original_ends.clear();
-        self.normalized_chars_start.clear();
-        self.normalized_chars_end.clear();
-        self.pending_matches.clear();
-        self.match_count = 0;
-    }
-
     pub fn process_chunk(&mut self, chunk: &str, dataset: &RuntimeDataset) -> Vec<ServerEvent> {
         let normalized = self.normalizer.normalize_chunk(chunk);
         let mut matches = Vec::new();

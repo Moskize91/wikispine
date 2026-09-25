@@ -1,7 +1,7 @@
 use crate::core::{MatchOptions, MatchSession, MatchStats, RuntimeDataset, ServerEvent};
 use crate::{Result, RuntimeError};
 use axum::body::Body;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseCode, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::DefaultBodyLimit;
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -20,6 +20,10 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 const MATCH_HTTP_BODY_LIMIT: usize = 32 * 1024 * 1024;
+const MATCH_WS_WINDOW_UTF16: usize = 64 * 1024;
+const MATCH_WS_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+const MATCH_WS_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const MATCH_WS_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Clone)]
 struct AppState {
@@ -92,7 +96,7 @@ async fn readyz() -> &'static str {
 }
 
 async fn metadata(State(state): State<Arc<AppState>>) -> Json<MetadataResponse> {
-    let runtime = &state.runtime;
+    let runtime = state.runtime.clone();
     Json(MetadataResponse {
         format: runtime.manifest.format.clone(),
         surface_normalization: runtime.manifest.surface_normalization.clone(),
@@ -113,23 +117,92 @@ async fn match_http(
 }
 
 async fn match_ws(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_match_ws(socket, state))
+    ws.max_message_size(MATCH_WS_MAX_MESSAGE_BYTES)
+        .max_frame_size(MATCH_WS_MAX_FRAME_BYTES)
+        .on_upgrade(move |socket| handle_match_ws(socket, state))
 }
 
 async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
     let runtime = &state.runtime;
-    let mut session = MatchSession::new(runtime.shard_count(), MatchOptions::default());
+    let (command_tx, mut worker_rx) = mpsc::unbounded_channel();
+    let (worker_tx, mut output_rx) = mpsc::channel(MATCH_WS_QUEUE_CAPACITY);
+    let worker_runtime = runtime.clone();
 
-    while let Some(message) = receiver.next().await {
+    tokio::spawn(async move {
+        let mut session = MatchSession::new(worker_runtime.shard_count(), MatchOptions::default());
+        while let Some(command) = worker_rx.recv().await {
+            match command {
+                WsWorkerCommand::Start { options } => {
+                    session = MatchSession::new(worker_runtime.shard_count(), options);
+                    if worker_tx.send(WsWorkerEvent::Started).await.is_err() {
+                        return;
+                    }
+                }
+                WsWorkerCommand::Chunk { text, consumed } => {
+                    let events = tokio::task::block_in_place(|| {
+                        session.process_chunk(&text, &worker_runtime)
+                    });
+                    for event in events {
+                        if worker_tx.send(WsWorkerEvent::Event(event)).await.is_err() {
+                            return;
+                        }
+                    }
+                    if worker_tx
+                        .send(WsWorkerEvent::Ack { consumed })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                WsWorkerCommand::End => {
+                    let events = tokio::task::block_in_place(|| session.finish());
+                    for event in events {
+                        if worker_tx.send(WsWorkerEvent::Event(event)).await.is_err() {
+                            return;
+                        }
+                    }
+                    if worker_tx
+                        .send(WsWorkerEvent::Done {
+                            matches: session.match_count,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                    let _ = worker_tx.send(WsWorkerEvent::Finished).await;
+                    return;
+                }
+            }
+        }
+    });
+
+    if send_json(
+        &mut sender,
+        &WsServerEvent::Ready {
+            max_message_bytes: MATCH_WS_MAX_MESSAGE_BYTES,
+            window: MATCH_WS_WINDOW_UTF16,
+        },
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
+
+    let mut started = false;
+    let mut ended = false;
+    let mut pending_window = 0usize;
+    let mut worker_closed = false;
+
+    while !worker_closed {
+        tokio::select! {
+            message = receiver.next(), if !ended => {
+                let Some(message) = message else { break; };
         if state.shutdown.load(Ordering::SeqCst) {
-            let _ = send_json(
-                &mut sender,
-                &ServerEvent::Interrupted {
-                    reason: "shutdown".to_string(),
-                },
-            )
-            .await;
+            let _ = sender.send(Message::Close(None)).await;
             return;
         }
         let Ok(message) = message else {
@@ -138,63 +211,101 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
         match message {
             Message::Text(payload) => {
                 let request = serde_json::from_str::<WsClientEvent>(&payload);
-                let response = match request {
+                match request {
                     Ok(WsClientEvent::Start { options }) => {
-                        session =
-                            MatchSession::new(runtime.shard_count(), options.unwrap_or_default());
-                        Some(WsServerEvent::Started)
-                    }
-                    Ok(WsClientEvent::Chunk { text: chunk }) => {
-                        for event in session.process_chunk(&chunk, runtime) {
-                            if send_json(&mut sender, &event).await.is_err() {
-                                return;
-                            }
-                        }
-                        Some(WsServerEvent::Ack {
-                            received_chars: session.offset_utf16,
-                        })
-                    }
-                    Ok(WsClientEvent::End) => {
-                        for event in session.finish() {
-                            if send_json(&mut sender, &event).await.is_err() {
-                                return;
-                            }
-                        }
-                        if send_json(
-                            &mut sender,
-                            &ServerEvent::Done {
-                                stats: MatchStats {
-                                    matches: session.match_count,
-                                },
-                            },
-                        )
-                        .await
-                        .is_err()
-                        {
+                        if started || pending_window != 0 {
+                            let _ = close_protocol(&mut sender, close_code::PROTOCOL, "start order").await;
                             return;
                         }
-                        session.reset();
-                        None
+                        started = true;
+                        if command_tx.send(WsWorkerCommand::Start { options: options.unwrap_or_default() }).is_err() {
+                            return;
+                        }
                     }
-                    Err(source) => Some(WsServerEvent::Error {
-                        message: source.to_string(),
-                    }),
-                };
-                if let Some(response) = response {
-                    if send_json(&mut sender, &response).await.is_err() {
+                    Ok(WsClientEvent::Chunk { text: chunk }) => {
+                        if !started || ended {
+                            let _ = close_protocol(&mut sender, close_code::PROTOCOL, "chunk order").await;
+                            return;
+                        }
+                        if chunk.is_empty() {
+                            let _ = close_protocol(&mut sender, close_code::PROTOCOL, "empty chunk").await;
+                            return;
+                        }
+                        let consumed = chunk.encode_utf16().count();
+                        if pending_window.saturating_add(consumed) > MATCH_WS_WINDOW_UTF16 {
+                            let _ = close_protocol(&mut sender, close_code::POLICY, "window exceeded").await;
+                            return;
+                        }
+                        pending_window += consumed;
+                        if command_tx.send(WsWorkerCommand::Chunk { text: chunk, consumed }).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(WsClientEvent::End) => {
+                        if !started || ended {
+                            let _ = close_protocol(&mut sender, close_code::PROTOCOL, "end order").await;
+                            return;
+                        }
+                        ended = true;
+                        if command_tx.send(WsWorkerCommand::End).is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = close_protocol(&mut sender, close_code::INVALID, "invalid JSON").await;
                         return;
                     }
                 }
             }
-            Message::Close(_) => break,
+            Message::Close(frame) => {
+                let _ = sender.send(Message::Close(frame)).await;
+                return;
+            }
             Message::Ping(payload) => {
                 if sender.send(Message::Pong(payload)).await.is_err() {
-                    break;
+                    return;
                 }
             }
             _ => {}
         }
+            }
+            output = output_rx.recv() => {
+                let Some(output) = output else { break; };
+                match output {
+                    WsWorkerEvent::Started => {
+                        if send_json(&mut sender, &WsServerEvent::Started).await.is_err() { return; }
+                    }
+                    WsWorkerEvent::Event(event) => {
+                        if send_json(&mut sender, &event).await.is_err() { return; }
+                    }
+                    WsWorkerEvent::Ack { consumed } => {
+                        pending_window = pending_window.saturating_sub(consumed);
+                        if send_json(&mut sender, &WsServerEvent::Ack { consumed, available: MATCH_WS_WINDOW_UTF16 - pending_window }).await.is_err() { return; }
+                    }
+                    WsWorkerEvent::Done { matches } => {
+                        if send_json(&mut sender, &ServerEvent::Done { stats: MatchStats { matches } }).await.is_err() { return; }
+                    }
+                    WsWorkerEvent::Finished => {
+                        let _ = sender.send(Message::Close(Some(CloseFrame { code: close_code::NORMAL, reason: "".into() }))).await;
+                        worker_closed = true;
+                    }
+                }
+            }
+        }
     }
+}
+
+async fn close_protocol(
+    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    code: CloseCode,
+    reason: &str,
+) -> std::result::Result<(), axum::Error> {
+    sender
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.to_owned().into(),
+        })))
+        .await
 }
 
 async fn send_json<T: Serialize>(
@@ -296,13 +407,30 @@ enum WsClientEvent {
     End,
 }
 
+enum WsWorkerCommand {
+    Start { options: MatchOptions },
+    Chunk { text: String, consumed: usize },
+    End,
+}
+
+enum WsWorkerEvent {
+    Started,
+    Event(ServerEvent),
+    Ack { consumed: usize },
+    Done { matches: usize },
+    Finished,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
 enum WsServerEvent {
+    #[serde(rename = "ready")]
+    Ready {
+        max_message_bytes: usize,
+        window: usize,
+    },
     #[serde(rename = "started")]
     Started,
     #[serde(rename = "ack")]
-    Ack { received_chars: usize },
-    #[serde(rename = "error")]
-    Error { message: String },
+    Ack { consumed: usize, available: usize },
 }
