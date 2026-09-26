@@ -189,5 +189,4 @@ jobs:
           python3 scripts/deploy-dev-fc.py \
             --function-name "$FC_DEV_FUNCTION_NAME" \
             --image "${{ needs.service-image.outputs.image }}" \
-            --acr-instance-id "$ACR_INSTANCE_ID" \
             --region "$ACR_REGION"
