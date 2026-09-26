@@ -100,7 +100,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="service-${GITHUB_SHA:0:12}"
+          commit_timestamp="$(git show -s --format=%ct "$GITHUB_SHA")"
+          commit_date="$(date -u -d "@$commit_timestamp" +%Y%m%d)"
+          tag="server-${commit_date}-${GITHUB_SHA:0:12}"
           owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "image=${ACR_IMAGE}:${tag}" >> "$GITHUB_OUTPUT"
@@ -229,3 +231,36 @@ jobs:
             --function-name "$FC_DEV_FUNCTION_NAME" \
             --image "${{ needs.service-image.outputs.image }}" \
             --region "$ACR_REGION"
+
+  publish-release-tag:
+    name: Publish service release tag
+    needs:
+      - service-image
+      - deploy-dev-fc
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create and push service release tag
+        env:
+          RELEASE_TAG: ${{ needs.service-image.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            tagged_commit="$(git rev-list -n 1 "$RELEASE_TAG")"
+            if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+              echo "Tag $RELEASE_TAG already points to $tagged_commit, expected $GITHUB_SHA." >&2
+              exit 1
+            fi
+            echo "Tag $RELEASE_TAG already points to $GITHUB_SHA; reusing it."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          git push origin "$RELEASE_TAG"
