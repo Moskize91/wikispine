@@ -28,3 +28,6 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+      - name: Test deployment tooling
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
