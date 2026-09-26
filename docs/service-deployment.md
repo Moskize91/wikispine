@@ -76,6 +76,9 @@ to overwrite its tag. The workflow waits until the ACR image can be read before 
 Singapore development FC function
 `wikispine-dev` using the dedicated `fc-dev-deploy` OIDC role. The function's existing
 custom-container settings are read and preserved, including the NAS-backed runtime configuration.
+Because the ACR repository is private and belongs to a different Alibaba Cloud account, the deploy
+job requests a fresh temporary ACR authorization token and supplies it to FC as registry
+authentication while resolving the new image.
 Production FC functions are not referenced by this workflow and must be updated manually to a
 released service image. CLI releases use Cargo versions and the separate `Release CLI` workflow.
 

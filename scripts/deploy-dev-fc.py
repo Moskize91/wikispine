@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -57,6 +58,8 @@ def build_update_payload(
     function: JsonObject,
     *,
     image: str,
+    registry_username: str | None = None,
+    registry_password: str | None = None,
 ) -> JsonObject:
     if function.get("runtime") != "custom-container":
         raise DeploymentError("target function is not a custom-container function")
@@ -65,8 +68,15 @@ def build_update_payload(
     if not isinstance(current, dict):
         raise DeploymentError("target function has no customContainerConfig")
 
+    username = (registry_username or "").strip()
+    password = (registry_password or "").strip()
+    if bool(username) != bool(password):
+        raise DeploymentError("registry username and password must be provided together")
+
     registry = current.get("registryConfig")
-    if isinstance(registry, dict) and (registry.get("authConfig") or registry.get("authConfigEncrypted")):
+    if not username and isinstance(registry, dict) and (
+        registry.get("authConfig") or registry.get("authConfigEncrypted")
+    ):
         raise DeploymentError(
             "target function uses private registry credentials; refusing to replace "
             "customContainerConfig because FC does not return reusable plaintext credentials"
@@ -78,6 +88,15 @@ def build_update_payload(
         if current.get(name) is not None
     }
     container["image"] = _required(image, "image")
+    registry_config = {
+        name: registry[name]
+        for name in ("certConfig", "networkConfig")
+        if isinstance(registry, dict) and registry.get(name) is not None
+    }
+    if username:
+        registry_config["authConfig"] = {"userName": username, "password": password}
+    if registry_config:
+        container["registryConfig"] = registry_config
     return {"customContainerConfig": container}
 
 
@@ -157,12 +176,19 @@ def deploy(
     region: str,
     timeout_seconds: float,
     poll_seconds: float,
+    registry_username: str | None = None,
+    registry_password: str | None = None,
     runner: CommandRunner = subprocess.run,
 ) -> JsonObject:
     current = get_function(function_name, region=region, runner=runner)
     if current.get("functionName") != function_name:
         raise DeploymentError("GetFunction returned a different function than requested")
-    payload = build_update_payload(current, image=image)
+    payload = build_update_payload(
+        current,
+        image=image,
+        registry_username=registry_username,
+        registry_password=registry_password,
+    )
     print(f"Updating FC function {function_name} to {image}")
     update_function(function_name, payload, region=region, runner=runner)
     return wait_for_update(
@@ -207,6 +233,8 @@ def main() -> int:
             function_name=arguments.function_name,
             image=arguments.image,
             region=arguments.region,
+            registry_username=os.environ.get("WIKISPINE_REGISTRY_USERNAME"),
+            registry_password=os.environ.get("WIKISPINE_REGISTRY_PASSWORD"),
             timeout_seconds=arguments.timeout_seconds,
             poll_seconds=arguments.poll_seconds,
         )
