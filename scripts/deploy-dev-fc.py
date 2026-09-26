@@ -22,6 +22,7 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 _PRESERVED_CONTAINER_FIELDS = (
     "accelerationType",
+    "acrInstanceId",
     "command",
     "entrypoint",
     "healthCheckConfig",
@@ -56,7 +57,6 @@ def build_update_payload(
     function: JsonObject,
     *,
     image: str,
-    acr_instance_id: str,
 ) -> JsonObject:
     if function.get("runtime") != "custom-container":
         raise DeploymentError("target function is not a custom-container function")
@@ -78,7 +78,6 @@ def build_update_payload(
         if current.get(name) is not None
     }
     container["image"] = _required(image, "image")
-    container["acrInstanceId"] = _required(acr_instance_id, "acr_instance_id")
     return {"customContainerConfig": container}
 
 
@@ -155,7 +154,6 @@ def deploy(
     *,
     function_name: str,
     image: str,
-    acr_instance_id: str,
     region: str,
     timeout_seconds: float,
     poll_seconds: float,
@@ -164,7 +162,7 @@ def deploy(
     current = get_function(function_name, region=region, runner=runner)
     if current.get("functionName") != function_name:
         raise DeploymentError("GetFunction returned a different function than requested")
-    payload = build_update_payload(current, image=image, acr_instance_id=acr_instance_id)
+    payload = build_update_payload(current, image=image)
     print(f"Updating FC function {function_name} to {image}")
     update_function(function_name, payload, region=region, runner=runner)
     return wait_for_update(
@@ -196,7 +194,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--function-name", required=True)
     parser.add_argument("--image", required=True)
-    parser.add_argument("--acr-instance-id", required=True)
     parser.add_argument("--region", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=600)
     parser.add_argument("--poll-seconds", type=float, default=5)
@@ -209,7 +206,6 @@ def main() -> int:
         deploy(
             function_name=arguments.function_name,
             image=arguments.image,
-            acr_instance_id=arguments.acr_instance_id,
             region=arguments.region,
             timeout_seconds=arguments.timeout_seconds,
             poll_seconds=arguments.poll_seconds,
