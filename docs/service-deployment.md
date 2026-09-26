@@ -57,24 +57,27 @@ Build the lightweight service image:
 scripts/build-service-image.sh --tag wikispine-service:0.1.0 --load
 ```
 
-The `Release Wikispine` GitHub Actions workflow publishes the lightweight image with the same
-version as the CLI. It pushes the same build to GitHub Container Registry and the OOMOL Alibaba
+The `Release Service` GitHub Actions workflow publishes the lightweight image independently from
+CLI releases. Its immutable tag is derived from the release commit, for example
+`service-6f0a7e89f4cb`. It pushes the same build to GitHub Container Registry and the OOMOL Alibaba
 Cloud Container Registry instance in Singapore:
 
 ```text
-ghcr.io/<owner>/wikispine-service:<version>
-oomol-registry.ap-southeast-1.cr.aliyuncs.com/oomol/wikispine-service:<version>
+ghcr.io/<owner>/wikispine-service:service-<commit>
+oomol-registry.ap-southeast-1.cr.aliyuncs.com/oomol/wikispine-service:service-<commit>
 ```
 
 The release job uses GitHub OIDC to assume the `docker-registry` Alibaba Cloud RAM role and requests
 a short-lived Container Registry authorization token for the current run. No long-lived Alibaba
 Cloud or Container Registry credential is stored in GitHub.
 
-After the image is published, the workflow updates only the Singapore development FC function
+Rerunning the workflow for the same commit reuses an existing immutable image instead of attempting
+to overwrite its tag. The workflow waits until the ACR image can be read before updating only the
+Singapore development FC function
 `wikispine-dev` using the dedicated `fc-dev-deploy` OIDC role. The function's existing
 custom-container settings are read and preserved, including the NAS-backed runtime configuration.
 Production FC functions are not referenced by this workflow and must be updated manually to a
-released version image.
+released service image. CLI releases use Cargo versions and the separate `Release CLI` workflow.
 
 The image contains only the `wikispine` binary. It does not include runtime data and declares
 `/data/runtime` as a volume. A runtime data directory must be mounted there, or the service exits at
