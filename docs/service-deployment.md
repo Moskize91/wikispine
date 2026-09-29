@@ -105,7 +105,7 @@ docker run --rm \
   wikispine-service:0.1.0
 ```
 
-The service listens on `0.0.0.0:$PORT`; the image default is `PORT=9000`.
+The service listens on `0.0.0.0:$PORT`; the image default is `PORT=9000`. The development release enables FC asynchronous task mode while retaining synchronous invocation as the default; HTTP responses include `x-fc-status` so FC can classify asynchronous task success and failure.
 
 Health checks:
 

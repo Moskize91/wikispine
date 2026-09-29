@@ -235,6 +235,14 @@ jobs:
             --log-project "$FC_DEV_LOG_PROJECT" \
             --logstore "$FC_DEV_LOGSTORE" \
             --region "$ACR_REGION"
+      - name: Verify FC asynchronous task mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          async_config_json="$(aliyun fc GetAsyncInvokeConfig \
+            --region "$ACR_REGION" \
+            --functionName "$FC_DEV_FUNCTION_NAME")"
+          jq -e '.asyncTask == true' <<<"$async_config_json" >/dev/null
 
   publish-release-tag:
     name: Publish service release tag
