@@ -74,6 +74,24 @@ class BuildUpdatePayloadTest(unittest.TestCase):
                 registry_username="temporary-user",
             )
 
+    def test_enables_request_and_instance_logs(self) -> None:
+        payload = deploy_dev_fc.build_update_payload(
+            self.function(),
+            image="registry/new:service-new",
+            log_project="serverless-dev",
+            logstore="default-logs",
+        )
+        self.assertEqual(
+            payload["logConfig"],
+            {
+                "enableInstanceMetrics": True,
+                "enableRequestMetrics": True,
+                "logBeginRule": "None",
+                "project": "serverless-dev",
+                "logstore": "default-logs",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

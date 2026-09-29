@@ -58,6 +58,8 @@ def build_update_payload(
     function: JsonObject,
     *,
     image: str,
+    log_project: str | None = None,
+    logstore: str | None = None,
     registry_username: str | None = None,
     registry_password: str | None = None,
 ) -> JsonObject:
@@ -97,7 +99,16 @@ def build_update_payload(
         registry_config["authConfig"] = {"userName": username, "password": password}
     if registry_config:
         container["registryConfig"] = registry_config
-    return {"customContainerConfig": container}
+    payload: JsonObject = {"customContainerConfig": container}
+    if log_project is not None or logstore is not None:
+        payload["logConfig"] = {
+            "enableInstanceMetrics": True,
+            "enableRequestMetrics": True,
+            "logBeginRule": "None",
+            "project": _required(log_project, "log project"),
+            "logstore": _required(logstore, "logstore"),
+        }
+    return payload
 
 
 def update_function(
@@ -129,6 +140,8 @@ def wait_for_update(
     function_name: str,
     *,
     image: str,
+    log_project: str,
+    logstore: str,
     previous_modified_time: str | None,
     region: str,
     timeout_seconds: float,
@@ -145,12 +158,19 @@ def wait_for_update(
         container = function.get("customContainerConfig") or {}
         current_image = container.get("image")
         resolved_image = container.get("resolvedImageUri")
+        log_config = function.get("logConfig") or {}
+        logging_matches = (
+            log_config.get("project") == log_project
+            and log_config.get("logstore") == logstore
+            and log_config.get("enableRequestMetrics") is True
+            and log_config.get("enableInstanceMetrics") is True
+        )
         modified_time = function.get("lastModifiedTime")
 
         if status == "Failed":
             raise DeploymentError(f"FC rejected the image update: {reason or 'unknown reason'}")
 
-        if current_image == image and status == "Successful":
+        if current_image == image and status == "Successful" and logging_matches:
             return function
         if (
             current_image == image
@@ -158,6 +178,7 @@ def wait_for_update(
             and modified_time
             and modified_time != previous_modified_time
             and resolved_image
+            and logging_matches
         ):
             return function
 
@@ -173,6 +194,8 @@ def deploy(
     *,
     function_name: str,
     image: str,
+    log_project: str,
+    logstore: str,
     region: str,
     timeout_seconds: float,
     poll_seconds: float,
@@ -186,6 +209,8 @@ def deploy(
     payload = build_update_payload(
         current,
         image=image,
+        log_project=log_project,
+        logstore=logstore,
         registry_username=registry_username,
         registry_password=registry_password,
     )
@@ -194,6 +219,8 @@ def deploy(
     return wait_for_update(
         function_name,
         image=image,
+        log_project=log_project,
+        logstore=logstore,
         previous_modified_time=current.get("lastModifiedTime"),
         region=region,
         timeout_seconds=timeout_seconds,
@@ -220,6 +247,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--function-name", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--log-project", required=True)
+    parser.add_argument("--logstore", required=True)
     parser.add_argument("--region", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=600)
     parser.add_argument("--poll-seconds", type=float, default=5)
@@ -232,6 +261,8 @@ def main() -> int:
         deploy(
             function_name=arguments.function_name,
             image=arguments.image,
+            log_project=arguments.log_project,
+            logstore=arguments.logstore,
             region=arguments.region,
             registry_username=os.environ.get("WIKISPINE_REGISTRY_USERNAME"),
             registry_password=os.environ.get("WIKISPINE_REGISTRY_PASSWORD"),

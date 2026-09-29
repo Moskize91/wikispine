@@ -23,6 +23,8 @@ env:
   ALIYUN_OIDC_PROVIDER_ARN: acs:ram::1368962511430008:oidc-provider/dev-oidc
   ALIYUN_OIDC_AUDIENCE: github-actions
   FC_DEV_FUNCTION_NAME: wikispine-dev
+  FC_DEV_LOG_PROJECT: serverless-ap-southeast-1-9e527e8c-57db-5710-bdd5-60856e55c87e
+  FC_DEV_LOGSTORE: default-logs
 
 jobs:
   service-image:
@@ -230,6 +232,8 @@ jobs:
           python3 scripts/deploy-dev-fc.py \
             --function-name "$FC_DEV_FUNCTION_NAME" \
             --image "${{ needs.service-image.outputs.image }}" \
+            --log-project "$FC_DEV_LOG_PROJECT" \
+            --logstore "$FC_DEV_LOGSTORE" \
             --region "$ACR_REGION"
 
   publish-release-tag:
