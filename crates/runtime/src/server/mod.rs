@@ -45,10 +45,19 @@ pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/v1/readyz", get(readyz))
         .route("/metadata", get(metadata))
+        .route("/v1/metadata", get(metadata))
         .route(
             "/match",
+            post(match_http)
+                .get(match_ws)
+                .layer(DefaultBodyLimit::max(MATCH_HTTP_BODY_LIMIT)),
+        )
+        .route(
+            "/v1/match",
             post(match_http)
                 .get(match_ws)
                 .layer(DefaultBodyLimit::max(MATCH_HTTP_BODY_LIMIT)),

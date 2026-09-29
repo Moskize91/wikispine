@@ -111,20 +111,20 @@ Health checks:
 
 ```bash
 curl http://127.0.0.1:9000/healthz
-curl http://127.0.0.1:9000/readyz
-curl http://127.0.0.1:9000/metadata
+curl http://127.0.0.1:9000/v1/readyz
+curl http://127.0.0.1:9000/v1/metadata
 ```
 
 Match request:
 
 ```bash
-curl -sS http://127.0.0.1:9000/match \
+curl -sS http://127.0.0.1:9000/v1/match \
   -H 'content-type: application/json' \
   -H 'accept: application/x-ndjson' \
   -d '{"text":"北京大学位于北京。","options":{"max_candidates_per_surface":3}}'
 ```
 
-`POST /match` accepts complete JSON requests up to 32 MiB. Response output is streamed NDJSON and is
+`POST /v1/match` accepts complete JSON requests up to 32 MiB. Response output is streamed NDJSON and is
 not capped by that request body limit.
 
 ## Runtime Signals

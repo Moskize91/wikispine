@@ -36,12 +36,12 @@ wikispine serve --data-dir /path/to/runtime
 
 ## HTTP Match
 
-`POST /match` 接收完整 JSON request。服务端在 request body 完整到达后开始识别，并以 NDJSON 流式返回结果。
+`POST /v1/match` 接收完整 JSON request。服务端在 request body 完整到达后开始识别，并以 NDJSON 流式返回结果。旧的 `POST /match` 作为兼容别名保留。
 
 Request:
 
 ```http
-POST /match
+POST /v1/match
 Content-Type: application/json
 Accept: application/x-ndjson
 ```
@@ -72,7 +72,7 @@ Response:
 
 ## WebSocket Match
 
-`GET /match` 可以升级为 WebSocket。每条连接表示一条连续的逻辑文本流；客户端可以在服务端消费前持续提交 chunk，服务端通过有界 window 提供背压。
+`GET /v1/match` 可以升级为 WebSocket。每条连接表示一条连续的逻辑文本流；客户端可以在服务端消费前持续提交 chunk，服务端通过有界 window 提供背压。旧的 `GET /match` 作为兼容别名保留。
 
 连接建立后，服务端先发送：
 
@@ -110,9 +110,11 @@ Server events:
 
 ## Metadata
 
-- `GET /healthz` 返回进程健康状态。
-- `GET /readyz` 返回 dataset 已加载状态。
-- `GET /metadata` 返回 runtime 数据集规模和格式信息。
+- `GET /v1/healthz` 返回进程健康状态。
+- `GET /v1/readyz` 返回 dataset 已加载状态。
+- `GET /v1/metadata` 返回 runtime 数据集规模和格式信息。
+
+无 `/v1` 前缀的三个旧路径作为兼容别名保留。
 
 ## Service Container
 
@@ -125,4 +127,4 @@ PORT=9000
 
 `wikispine serve` 会优先读取 `WIKISPINE_DATA_DIR` 作为数据目录，优先读取 `WIKISPINE_BIND` 或 `PORT` 作为监听地址。`PORT=9000` 时监听 `0.0.0.0:9000`。
 
-`POST /match` 是完整 JSON request，服务端允许最多 32 MiB request body。更大的输入应拆成多个请求，或使用 WebSocket chunk 流。
+`POST /v1/match` 是完整 JSON request，服务端允许最多 32 MiB request body。更大的输入应拆成多个请求，或使用 WebSocket chunk 流。

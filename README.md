@@ -185,7 +185,7 @@ wikispine serve --bind 127.0.0.1:8719
 HTTP:
 
 ```http
-POST /match
+POST /v1/match
 Content-Type: application/json
 Accept: application/x-ndjson
 ```
@@ -200,13 +200,13 @@ Accept: application/x-ndjson
 }
 ```
 
-The HTTP response is streamed NDJSON. `GET /match` upgrades to WebSocket for chunked streaming
+The HTTP response is streamed NDJSON. `GET /v1/match` upgrades to WebSocket for chunked streaming
 input. Health and metadata endpoints are:
 
 ```text
 GET /healthz
-GET /readyz
-GET /metadata
+GET /v1/readyz
+GET /v1/metadata
 ```
 
 See [docs/runtime-api.md](docs/runtime-api.md) for request and response details.

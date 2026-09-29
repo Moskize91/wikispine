@@ -906,8 +906,8 @@ fn print_match_help() {
 fn print_serve_help() {
     println!("Usage: wikispine serve [options]");
     println!();
-    println!("Start the runtime service. HTTP POST /match returns NDJSON match events;");
-    println!("WebSocket GET /match supports streaming chunks.");
+    println!("Start the runtime service. HTTP POST /v1/match returns NDJSON match events;");
+    println!("WebSocket GET /v1/match supports streaming chunks.");
     println!();
     println!("  --data-dir <dir>   Runtime data directory override");
     println!("                     Env fallback: WIKISPINE_DATA_DIR");
