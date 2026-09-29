@@ -29,6 +29,7 @@ const MATCH_WS_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MATCH_WS_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MATCH_WS_QUEUE_CAPACITY: usize = 32;
 const FC_REQUEST_ID_HEADER: &str = "x-fc-request-id";
+const FC_STATUS_HEADER: &str = "x-fc-status";
 const PARENT_REQUEST_ID_HEADER: &str = "x-wg-parent-request-id";
 const SERVICE_REQUEST_ID_HEADER: &str = "x-wg-request-id";
 const TRACE_ID_HEADER: &str = "x-wg-trace-id";
@@ -473,6 +474,12 @@ async fn observe_request(mut request: Request, next: Next) -> Response {
     request.extensions_mut().insert(context);
     let started_at = Instant::now();
     let mut response = next.run(request).await;
+    let fc_status = if response.status().is_success() || response.status().is_informational() {
+        HeaderValue::from_static("200")
+    } else {
+        HeaderValue::from_static("404")
+    };
+    response.headers_mut().insert(FC_STATUS_HEADER, fc_status);
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response
             .headers_mut()

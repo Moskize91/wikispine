@@ -136,6 +136,27 @@ def update_function(
         )
 
 
+def enable_async_tasks(
+    function_name: str,
+    *,
+    region: str,
+    runner: CommandRunner = subprocess.run,
+) -> JsonObject:
+    return _run_aliyun(
+        [
+            "fc",
+            "PutAsyncInvokeConfig",
+            "--region",
+            region,
+            "--functionName",
+            function_name,
+            "--body",
+            json.dumps({"asyncTask": True}, separators=(",", ":")),
+        ],
+        runner=runner,
+    )
+
+
 def wait_for_update(
     function_name: str,
     *,
@@ -216,7 +237,7 @@ def deploy(
     )
     print(f"Updating FC function {function_name} to {image}")
     update_function(function_name, payload, region=region, runner=runner)
-    return wait_for_update(
+    updated = wait_for_update(
         function_name,
         image=image,
         log_project=log_project,
@@ -227,6 +248,10 @@ def deploy(
         poll_seconds=poll_seconds,
         runner=runner,
     )
+    async_config = enable_async_tasks(function_name, region=region, runner=runner)
+    if async_config.get("asyncTask") is not True:
+        raise DeploymentError("FC did not enable asynchronous task mode")
+    return updated
 
 
 def _run_aliyun(arguments: Sequence[str], *, runner: CommandRunner) -> JsonObject:

@@ -4,6 +4,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import ANY, Mock, patch
 
 
 def load_deploy_module() -> ModuleType:
@@ -90,6 +91,62 @@ class BuildUpdatePayloadTest(unittest.TestCase):
                 "project": "serverless-dev",
                 "logstore": "default-logs",
             },
+        )
+
+    def test_deploy_enables_fc_async_task_mode(self) -> None:
+        function = self.function()
+        function["functionName"] = "wikispine-dev"
+        with (
+            patch.object(deploy_dev_fc, "get_function", return_value=function),
+            patch.object(deploy_dev_fc, "update_function"),
+            patch.object(deploy_dev_fc, "wait_for_update", return_value=function),
+            patch.object(
+                deploy_dev_fc,
+                "enable_async_tasks",
+                return_value={"asyncTask": True},
+            ) as enable_async_tasks,
+        ):
+            deploy_dev_fc.deploy(
+                function_name="wikispine-dev",
+                image="registry/new:service-new",
+                log_project="serverless-dev",
+                logstore="default-logs",
+                region="ap-southeast-1",
+                timeout_seconds=600,
+                poll_seconds=0,
+            )
+
+        enable_async_tasks.assert_called_once_with(
+            "wikispine-dev", region="ap-southeast-1", runner=ANY
+        )
+
+    def test_enables_fc_async_task_mode(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(arguments: list[str], **_: object):
+            calls.append(arguments)
+            return Mock(returncode=0, stdout='{"asyncTask":true}', stderr="")
+
+        result = deploy_dev_fc.enable_async_tasks(
+            "wikispine-dev", region="ap-southeast-1", runner=runner
+        )
+
+        self.assertTrue(result["asyncTask"])
+        self.assertEqual(
+            calls,
+            [
+                [
+                    "aliyun",
+                    "fc",
+                    "PutAsyncInvokeConfig",
+                    "--region",
+                    "ap-southeast-1",
+                    "--functionName",
+                    "wikispine-dev",
+                    "--body",
+                    '{"asyncTask":true}',
+                ]
+            ],
         )
 
 
