@@ -2,9 +2,9 @@ use crate::core::{MatchOptions, MatchSession, MatchStats, RuntimeDataset, Server
 use crate::{Result, RuntimeError};
 use axum::body::Body;
 use axum::extract::ws::{close_code, CloseCode, CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::DefaultBodyLimit;
-use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{header, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,15 +15,23 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 const MATCH_HTTP_BODY_LIMIT: usize = 32 * 1024 * 1024;
 const MATCH_WS_WINDOW_UTF16: usize = 64 * 1024;
 const MATCH_WS_MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MATCH_WS_MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MATCH_WS_QUEUE_CAPACITY: usize = 32;
+const FC_REQUEST_ID_HEADER: &str = "x-fc-request-id";
+const PARENT_REQUEST_ID_HEADER: &str = "x-wg-parent-request-id";
+const SERVICE_REQUEST_ID_HEADER: &str = "x-wg-request-id";
+const TRACE_ID_HEADER: &str = "x-wg-trace-id";
 
 #[derive(Clone)]
 struct AppState {
@@ -31,14 +39,22 @@ struct AppState {
     shutdown: Arc<AtomicBool>,
 }
 
+#[derive(Clone)]
+struct RequestContext {
+    parent_request_id: Option<String>,
+    request_id: String,
+    trace_id: String,
+}
+
 pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
-    eprintln!("loading dataset {}", dataset.display());
+    initialize_tracing();
+    info!(event = "dataset.loading", path = %dataset.display());
     let runtime = Arc::new(RuntimeDataset::open(dataset)?);
-    eprintln!(
-        "loaded dataset surfaces={} qids={} shards={}",
-        runtime.manifest.surface_count,
-        runtime.manifest.qid_count,
-        runtime.shard_count()
+    info!(
+        event = "dataset.loaded",
+        surfaces = runtime.manifest.surface_count,
+        qids = runtime.manifest.qid_count,
+        shards = runtime.shard_count(),
     );
     let shutdown = Arc::new(AtomicBool::new(false));
     let state = Arc::new(AppState { runtime, shutdown });
@@ -62,10 +78,11 @@ pub async fn serve(dataset: &Path, bind: SocketAddr) -> Result<()> {
                 .get(match_ws)
                 .layer(DefaultBodyLimit::max(MATCH_HTTP_BODY_LIMIT)),
         )
-        .with_state(state.clone());
+        .with_state(state.clone())
+        .layer(middleware::from_fn(observe_request));
 
     let listener = TcpListener::bind(bind).await?;
-    eprintln!("listening on http://{bind}");
+    info!(event = "server.listening", address = %bind);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(state.shutdown.clone()))
         .await
@@ -119,19 +136,31 @@ async fn metadata(State(state): State<Arc<AppState>>) -> Json<MetadataResponse> 
 
 async fn match_http(
     State(state): State<Arc<AppState>>,
+    axum::extract::Extension(context): axum::extract::Extension<RequestContext>,
     Json(request): Json<MatchRequest>,
 ) -> Response {
     let options = request.options.unwrap_or_default();
-    ndjson_match_response(state, request.text, options)
+    ndjson_match_response(state, request.text, options, context)
 }
 
-async fn match_ws(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse {
+async fn match_ws(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Extension(context): axum::extract::Extension<RequestContext>,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
     ws.max_message_size(MATCH_WS_MAX_MESSAGE_BYTES)
         .max_frame_size(MATCH_WS_MAX_FRAME_BYTES)
-        .on_upgrade(move |socket| handle_match_ws(socket, state))
+        .on_upgrade(move |socket| handle_match_ws(socket, state, context))
 }
 
-async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
+async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>, context: RequestContext) {
+    let started_at = Instant::now();
+    info!(
+        event = "websocket.started",
+        request_id = context.request_id,
+        trace_id = context.trace_id,
+        parent_request_id = context.parent_request_id,
+    );
     let (mut sender, mut receiver) = socket.split();
     let runtime = &state.runtime;
     let (command_tx, mut worker_rx) = mpsc::unbounded_channel();
@@ -223,6 +252,7 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
                 match request {
                     Ok(WsClientEvent::Start { options }) => {
                         if started || pending_window != 0 {
+                            log_protocol_close(&context, "start order");
                             let _ = close_protocol(&mut sender, close_code::PROTOCOL, "start order").await;
                             return;
                         }
@@ -233,15 +263,18 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
                     }
                     Ok(WsClientEvent::Chunk { text: chunk }) => {
                         if !started || ended {
+                            log_protocol_close(&context, "chunk order");
                             let _ = close_protocol(&mut sender, close_code::PROTOCOL, "chunk order").await;
                             return;
                         }
                         if chunk.is_empty() {
+                            log_protocol_close(&context, "empty chunk");
                             let _ = close_protocol(&mut sender, close_code::PROTOCOL, "empty chunk").await;
                             return;
                         }
                         let consumed = chunk.encode_utf16().count();
                         if pending_window.saturating_add(consumed) > MATCH_WS_WINDOW_UTF16 {
+                            log_protocol_close(&context, "window exceeded");
                             let _ = close_protocol(&mut sender, close_code::POLICY, "window exceeded").await;
                             return;
                         }
@@ -252,6 +285,7 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
                     }
                     Ok(WsClientEvent::End) => {
                         if !started || ended {
+                            log_protocol_close(&context, "end order");
                             let _ = close_protocol(&mut sender, close_code::PROTOCOL, "end order").await;
                             return;
                         }
@@ -261,6 +295,7 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
                         }
                     }
                     Err(_) => {
+                        log_protocol_close(&context, "invalid JSON");
                         let _ = close_protocol(&mut sender, close_code::INVALID, "invalid JSON").await;
                         return;
                     }
@@ -302,6 +337,12 @@ async fn handle_match_ws(socket: WebSocket, state: Arc<AppState>) {
             }
         }
     }
+    info!(
+        event = "websocket.finished",
+        request_id = context.request_id,
+        trace_id = context.trace_id,
+        duration_ms = started_at.elapsed().as_millis() as u64,
+    );
 }
 
 async fn close_protocol(
@@ -327,9 +368,21 @@ async fn send_json<T: Serialize>(
     sender.send(Message::Text(payload)).await
 }
 
-fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptions) -> Response {
+fn ndjson_match_response(
+    state: Arc<AppState>,
+    text: String,
+    options: MatchOptions,
+    context: RequestContext,
+) -> Response {
     let (sender, receiver) = mpsc::channel::<std::result::Result<Bytes, RuntimeError>>(32);
     tokio::task::spawn_blocking(move || {
+        let started_at = Instant::now();
+        info!(
+            event = "match.started",
+            request_id = context.request_id,
+            trace_id = context.trace_id,
+            input_chars = text.chars().count(),
+        );
         let mut matches = 0usize;
         let mut interrupted = false;
         if state.shutdown.load(Ordering::SeqCst) {
@@ -338,6 +391,12 @@ fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptio
                 ServerEvent::Interrupted {
                     reason: "shutdown".to_string(),
                 },
+            );
+            warn!(
+                event = "match.interrupted",
+                request_id = context.request_id,
+                trace_id = context.trace_id,
+                reason = "shutdown",
             );
             return;
         }
@@ -356,12 +415,32 @@ fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptio
                     reason: "shutdown".to_string(),
                 },
             );
+            warn!(
+                event = "match.interrupted",
+                request_id = context.request_id,
+                trace_id = context.trace_id,
+                reason = "shutdown",
+            );
         } else {
-            let _ = send_ndjson_event(
+            if !send_ndjson_event(
                 &sender,
                 ServerEvent::Done {
                     stats: MatchStats { matches },
                 },
+            ) {
+                error!(
+                    event = "match.stream-failed",
+                    request_id = context.request_id,
+                    trace_id = context.trace_id,
+                );
+                return;
+            }
+            info!(
+                event = "match.completed",
+                request_id = context.request_id,
+                trace_id = context.trace_id,
+                matches,
+                duration_ms = started_at.elapsed().as_millis() as u64,
             );
         }
     });
@@ -370,6 +449,72 @@ fn ndjson_match_response(state: Arc<AppState>, text: String, options: MatchOptio
         .header(header::CONTENT_TYPE, "application/x-ndjson")
         .body(Body::from_stream(ReceiverStream::new(receiver)))
         .unwrap()
+}
+
+async fn observe_request(mut request: Request, next: Next) -> Response {
+    let request_id = header_text(request.headers(), FC_REQUEST_ID_HEADER)
+        .unwrap_or_else(|| format!("local-{}", Uuid::new_v4()));
+    let trace_id =
+        header_text(request.headers(), TRACE_ID_HEADER).unwrap_or_else(|| request_id.clone());
+    let parent_request_id = header_text(request.headers(), PARENT_REQUEST_ID_HEADER);
+    let context = RequestContext {
+        parent_request_id,
+        request_id: request_id.clone(),
+        trace_id: trace_id.clone(),
+    };
+    info!(
+        event = "request.received",
+        method = %request.method(),
+        path = request.uri().path(),
+        request_id,
+        trace_id,
+        parent_request_id = context.parent_request_id,
+    );
+    request.extensions_mut().insert(context);
+    let started_at = Instant::now();
+    let mut response = next.run(request).await;
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response
+            .headers_mut()
+            .insert(SERVICE_REQUEST_ID_HEADER, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&trace_id) {
+        response.headers_mut().insert(TRACE_ID_HEADER, value);
+    }
+    info!(
+        event = "response.started",
+        request_id,
+        trace_id,
+        status_code = response.status().as_u16(),
+        duration_ms = started_at.elapsed().as_millis() as u64,
+    );
+    response
+}
+
+fn header_text(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn initialize_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init();
+}
+
+fn log_protocol_close(context: &RequestContext, reason: &str) {
+    warn!(
+        event = "websocket.protocol-close",
+        request_id = context.request_id,
+        trace_id = context.trace_id,
+        reason,
+    );
 }
 
 fn send_ndjson_event(
